@@ -63,6 +63,7 @@ static const char *script;
 static bool single_step;
 static bool readonly_image;
 static bool virtio_rng;
+static bool vnc;
 extern bool ioport_debug;
 extern int  active_console;
 
@@ -108,6 +109,8 @@ static const struct option options[] = {
 			"Enable single stepping"),
 	OPT_BOOLEAN('g', "ioport-debug", &ioport_debug,
 			"Enable ioport debugging"),
+
+	OPT_BOOLEAN('\0', "vnc", &vnc, "Enable VNC framebuffer"),
 	OPT_END()
 };
 
@@ -477,8 +480,10 @@ int kvm_cmd_run(int argc, const char **argv, const char *prefix)
 	nr_online_cpus = sysconf(_SC_NPROCESSORS_ONLN);
 	thread_pool__init(nr_online_cpus);
 
-	pthread_t thread;
-	pthread_create(&thread, NULL, dovnc, NULL);
+	if (vnc) {
+		pthread_t thread;
+		pthread_create(&thread, NULL, dovnc, NULL);
+	}
 
 	for (i = 0; i < nrcpus; i++) {
 		if (pthread_create(&kvm_cpus[i]->thread, NULL, kvm_cpu_thread, kvm_cpus[i]) != 0)
