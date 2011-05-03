@@ -12,6 +12,7 @@ FIND = find
 CSCOPE = cscope
 TAGS = ctags
 
+OBJS += dummy-vesa.o
 OBJS	+= 8250-serial.o
 OBJS	+= virtio-blk.o
 OBJS	+= virtio-net.o
@@ -48,6 +49,7 @@ OBJS	+= bios/bios.o
 
 LIBS	+= -lrt
 LIBS	+= -lpthread
+LIBS += -lvncserver
 
 # Additional ARCH settings for x86
 ARCH ?= $(shell echo $(uname_M) | sed -e s/i.86/i386/ -e s/sun4u/sparc64/ \
@@ -133,11 +135,12 @@ bios/bios.o: bios/bios.S bios/bios-rom.bin
 bios/bios-rom.bin: bios/bios-rom.S bios/e820.c
 	$(E) "  CC      " $@
 	$(Q) $(CC) -include code16gcc.h $(CFLAGS) $(BIOS_CFLAGS) -c -s bios/e820.c -o bios/e820.o
+	$(Q) $(CC) -include code16gcc.h $(CFLAGS) $(BIOS_CFLAGS) -c -s bios/int10.c -o bios/int10.o
 	$(Q) $(CC) $(CFLAGS) $(BIOS_CFLAGS) -c -s bios/bios-rom.S -o bios/bios-rom.o
 	$(E) "  LD      " $@
-	$(Q) ld -T bios/rom.ld.S -o bios/bios-rom.bin.elf bios/bios-rom.o bios/e820.o
+	$(Q) ld -T bios/rom.ld.S -o bios/bios-rom.bin.elf bios/bios-rom.o bios/e820.o bios/int10.o
 	$(E) "  OBJCOPY " $@
-	$(Q) objcopy -O binary -j .text bios/bios-rom.bin.elf bios/bios-rom.bin
+	$(Q) objcopy -O binary -j .text -j .data bios/bios-rom.bin.elf bios/bios-rom.bin
 	$(E) "  NM      " $@
 	$(Q) cd bios && sh gen-offsets.sh > bios-rom.h && cd ..
 

@@ -11,6 +11,7 @@
 #include <sys/stat.h>
 #include <ctype.h>
 
+
 /* user defined header files */
 #include <linux/types.h>
 #include <kvm/kvm.h>
@@ -26,6 +27,7 @@
 #include <kvm/rtc.h>
 #include <kvm/term.h>
 #include <kvm/ioport.h>
+#include <kvm/dummy-vesa.h>
 #include <kvm/threadpool.h>
 
 /* header files for gitish interface  */
@@ -392,7 +394,8 @@ int kvm_cmd_run(int argc, const char **argv, const char *prefix)
 	kvm->nrcpus = nrcpus;
 
 	memset(real_cmdline, 0, sizeof(real_cmdline));
-	strcpy(real_cmdline, "notsc nolapic noacpi pci=conf1 console=ttyS0 ");
+//	strcpy(real_cmdline, "notsc nolapic noacpi pci=conf1 console=ttyS0 ");
+	strcpy(real_cmdline, "notsc nolapic noacpi pci=conf1 ");
 	if (kernel_cmdline)
 		strlcat(real_cmdline, kernel_cmdline, sizeof(real_cmdline));
 
@@ -433,6 +436,8 @@ int kvm_cmd_run(int argc, const char **argv, const char *prefix)
 
 	virtio_console__init(kvm);
 
+	dummy_vesa__init(kvm);
+
 	if (virtio_rng)
 		virtio_rng__init(kvm);
 
@@ -471,6 +476,9 @@ int kvm_cmd_run(int argc, const char **argv, const char *prefix)
 
 	nr_online_cpus = sysconf(_SC_NPROCESSORS_ONLN);
 	thread_pool__init(nr_online_cpus);
+
+	pthread_t thread;
+	pthread_create(&thread, NULL, dovnc, NULL);
 
 	for (i = 0; i < nrcpus; i++) {
 		if (pthread_create(&kvm_cpus[i]->thread, NULL, kvm_cpu_thread, kvm_cpus[i]) != 0)

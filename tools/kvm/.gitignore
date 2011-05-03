@@ -1,6 +1,7 @@
 /kvm
 *.o
 *.d
+*.img
 .cscope
 tags
 include/common-cmds.h
