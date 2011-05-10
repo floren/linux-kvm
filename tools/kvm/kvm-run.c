@@ -481,6 +481,7 @@ int kvm_cmd_run(int argc, const char **argv, const char *prefix)
 	thread_pool__init(nr_online_cpus);
 
 	if (vnc) {
+		kbd_init(kvm);
 		pthread_t thread;
 		pthread_create(&thread, NULL, dovnc, NULL);
 	}
