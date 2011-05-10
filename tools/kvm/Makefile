@@ -12,6 +12,8 @@ FIND = find
 CSCOPE = cscope
 TAGS = ctags
 
+#OBJS += ps2.o
+OBJS += pckbd.o
 OBJS += dummy-vesa.o
 OBJS	+= 8250-serial.o
 OBJS	+= virtio-blk.o
@@ -74,7 +76,7 @@ DEFINES	+= -D_GNU_SOURCE
 KVM_INCLUDE := include
 CFLAGS	+= $(CPPFLAGS) $(DEFINES) -I$(KVM_INCLUDE) -I../../include -I../../arch/$(ARCH)/include/ -Os -g
 
-WARNINGS += -Werror
+#WARNINGS += -Werror
 WARNINGS += -Wall
 WARNINGS += -Wcast-align
 WARNINGS += -Wformat=2

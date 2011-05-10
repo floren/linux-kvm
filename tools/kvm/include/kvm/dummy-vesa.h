@@ -14,6 +14,7 @@ void dummy_vesa__init(struct kvm *self);
 
 // Here's my framebuffer stuff
 extern char videomem[VESA_MEM_SIZE];
-void* dovnc(void*);
-
+extern void* dovnc(void*);
+extern void kbd_init(struct kvm*);
+extern void kbd__inject_interrupt(struct kvm *self);
 #endif //KVM__DUMMY_VESA_H

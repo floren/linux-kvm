@@ -133,6 +133,7 @@ static void handle_sigalrm(int sig)
 {
 	serial8250__inject_interrupt(kvm);
 	virtio_console__inject_interrupt(kvm);
+	kbd__inject_interrupt(kvm);
 }
 
 static void *kvm_cpu_thread(void *arg)
