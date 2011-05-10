@@ -3,7 +3,9 @@
 #include "kvm/apic.h"
 #include "kvm/mptable.h"
 #include "kvm/util.h"
+#include "kvm/irq.h"
 
+#include <linux/kernel.h>
 #include <string.h>
 
 /*
@@ -15,6 +17,7 @@
 #endif
 
 #include <asm/mpspec_def.h>
+#include <linux/types.h>
 
 /*
  * FIXME: please make sure the addresses borrowed
@@ -58,6 +61,21 @@ static unsigned int gen_cpu_flag(unsigned int cpu, unsigned int ncpu)
  */
 #define MPTABLE_MAX_CPUS	255
 
+static void mptable_add_irq_src(struct mpc_intsrc *mpc_intsrc,
+				u16 srcbusid,	u16 srcbusirq,
+				u16 dstapic,	u16 dstirq)
+{
+	*mpc_intsrc = (struct mpc_intsrc) {
+		.type		= MP_INTSRC,
+		.irqtype	= mp_INT,
+		.irqflag	= MP_IRQDIR_DEFAULT,
+		.srcbus		= srcbusid,
+		.srcbusirq	= srcbusirq,
+		.dstapic	= dstapic,
+		.dstirq		= dstirq
+	};
+}
+
 /**
  * mptable_setup - create mptable and fill guest memory with it
  */
@@ -70,6 +88,7 @@ void mptable_setup(struct kvm *kvm, unsigned int ncpus)
 	struct mpc_bus *mpc_bus;
 	struct mpc_ioapic *mpc_ioapic;
 	struct mpc_intsrc *mpc_intsrc;
+	struct rb_node *pci_tree;
 
 	const int pcibusid = 0;
 	const int isabusid = 1;
@@ -169,41 +188,23 @@ void mptable_setup(struct kvm *kvm, unsigned int ncpus)
 	 *
 	 * Also note we use PCI irqs here, no for ISA bus yet.
 	 */
-	mpc_intsrc		= last_addr;
-	mpc_intsrc->type	= MP_INTSRC;
-	mpc_intsrc->irqtype	= mp_INT;
-	mpc_intsrc->irqflag	= MP_IRQDIR_DEFAULT;
-	mpc_intsrc->srcbus	= pcibusid;
-	mpc_intsrc->srcbusirq	= 2; /* virtio console irq pin */
-	mpc_intsrc->dstapic	= ioapicid;
-	mpc_intsrc->dstirq	= 13; /* VIRTIO_CONSOLE_IRQ */
 
-	last_addr = (void *)&mpc_intsrc[1];
-	nentries++;
+	for (pci_tree = irq__get_pci_tree(); pci_tree; pci_tree = rb_next(pci_tree)) {
+		struct pci_dev *dev = rb_entry(pci_tree, struct pci_dev, node);
+		struct irq_line *irq_line;
 
-	mpc_intsrc		= last_addr;
-	mpc_intsrc->type	= MP_INTSRC;
-	mpc_intsrc->irqtype	= mp_INT;
-	mpc_intsrc->irqflag	= MP_IRQDIR_DEFAULT;
-	mpc_intsrc->srcbus	= pcibusid;
-	mpc_intsrc->srcbusirq	= 1; /* virtio block irq pin */
-	mpc_intsrc->dstapic	= ioapicid;
-	mpc_intsrc->dstirq	= 15; /* VIRTIO_BLK_IRQ */
+		list_for_each_entry(irq_line, &dev->lines, node) {
+			unsigned char srcbusirq;
 
-	last_addr = (void *)&mpc_intsrc[1];
-	nentries++;
+			srcbusirq = (dev->id << 2) | (dev->pin - 1);
 
-	mpc_intsrc		= last_addr;
-	mpc_intsrc->type	= MP_INTSRC;
-	mpc_intsrc->irqtype	= mp_INT;
-	mpc_intsrc->irqflag	= MP_IRQDIR_DEFAULT;
-	mpc_intsrc->srcbus	= pcibusid;
-	mpc_intsrc->srcbusirq	= 3; /* virtio net irq pin */
-	mpc_intsrc->dstapic	= ioapicid;
-	mpc_intsrc->dstirq	= 14; /* VIRTIO_NET_IRQ */
+			mpc_intsrc = last_addr;
 
-	last_addr = (void *)&mpc_intsrc[1];
-	nentries++;
+			mptable_add_irq_src(mpc_intsrc, pcibusid, srcbusirq, ioapicid, irq_line->line);
+			last_addr = (void *)&mpc_intsrc[1];
+			nentries++;
+		}
+	}
 
 	/*
 	 * Local IRQs assignment (LINT0, LINT1)

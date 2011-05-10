@@ -1,9 +1,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <signal.h>
-#include <stdint.h>
 #include <unistd.h>
-#include <inttypes.h>
 #include <stdlib.h>
 #include <termios.h>
 #include <sys/utsname.h>
@@ -29,10 +27,12 @@
 #include <kvm/ioport.h>
 #include <kvm/dummy-vesa.h>
 #include <kvm/threadpool.h>
+#include <kvm/barrier.h>
 
 /* header files for gitish interface  */
 #include <kvm/kvm-run.h>
 #include <kvm/parse-options.h>
+#include <kvm/mutex.h>
 
 #define DEFAULT_KVM_DEV		"/dev/kvm"
 #define DEFAULT_CONSOLE		"serial"
@@ -44,16 +44,18 @@
 #define MB_SHIFT		(20)
 #define MIN_RAM_SIZE_MB		(64ULL)
 #define MIN_RAM_SIZE_BYTE	(MIN_RAM_SIZE_MB << MB_SHIFT)
+#define MAX_DISK_IMAGES		4
 
 static struct kvm *kvm;
 static struct kvm_cpu *kvm_cpus[KVM_NR_CPUS];
 static __thread struct kvm_cpu *current_kvm_cpu;
 
-static u64 ram_size = MIN_RAM_SIZE_MB;
+static u64 ram_size;
+static u8  image_count;
 static const char *kernel_cmdline;
 static const char *kernel_filename;
 static const char *initrd_filename;
-static const char *image_filename;
+static const char *image_filename[MAX_DISK_IMAGES];
 static const char *console;
 static const char *kvm_dev;
 static const char *network;
@@ -61,7 +63,7 @@ static const char *host_ip_addr;
 static const char *guest_mac;
 static const char *script;
 static bool single_step;
-static bool readonly_image;
+static bool readonly_image[MAX_DISK_IMAGES];
 static bool virtio_rng;
 static bool vnc;
 extern bool ioport_debug;
@@ -74,13 +76,31 @@ static const char * const run_usage[] = {
 	NULL
 };
 
+static int img_name_parser(const struct option *opt, const char *arg, int unset)
+{
+	char *sep;
+
+	if (image_count >= MAX_DISK_IMAGES)
+		die("Currently only 4 images are supported");
+
+	image_filename[image_count] = arg;
+	sep = strstr(arg, ",");
+	if (sep) {
+		if (strcmp(sep + 1, "ro") == 0)
+			readonly_image[image_count] = 1;
+		*sep = 0;
+	}
+
+	image_count++;
+
+	return 0;
+}
+
 static const struct option options[] = {
 	OPT_GROUP("Basic options:"),
 	OPT_INTEGER('\0', "cpus", &nrcpus, "Number of CPUs"),
 	OPT_U64('m', "mem", &ram_size, "Virtual machine memory size in MiB."),
-	OPT_STRING('i', "image", &image_filename, "image", "Disk image"),
-	OPT_BOOLEAN('\0', "readonly", &readonly_image,
-			"Don't write changes back to disk image"),
+	OPT_CALLBACK('i', "image", NULL, "image", "Disk image", img_name_parser),
 	OPT_STRING('c', "console", &console, "serial or virtio",
 			"Console to use"),
 	OPT_BOOLEAN('\0', "virtio-rng", &virtio_rng,
@@ -114,6 +134,28 @@ static const struct option options[] = {
 	OPT_END()
 };
 
+/*
+ * Serialize debug printout so that the output of multiple vcpus does not
+ * get mixed up:
+ */
+static int printout_done;
+
+static void handle_sigusr1(int sig)
+{
+	struct kvm_cpu *cpu = current_kvm_cpu;
+
+	if (!cpu)
+		return;
+
+	printf("\n #\n # vCPU #%ld's dump:\n #\n", cpu->cpu_id);
+	kvm_cpu__show_registers(cpu);
+	kvm_cpu__show_code(cpu);
+	kvm_cpu__show_page_tables(cpu);
+	fflush(stdout);
+	printout_done = 1;
+	mb();
+}
+
 static void handle_sigquit(int sig)
 {
 	int i;
@@ -121,9 +163,18 @@ static void handle_sigquit(int sig)
 	for (i = 0; i < nrcpus; i++) {
 		struct kvm_cpu *cpu = kvm_cpus[i];
 
-		kvm_cpu__show_registers(cpu);
-		kvm_cpu__show_code(cpu);
-		kvm_cpu__show_page_tables(cpu);
+		if (!cpu)
+			continue;
+
+		printout_done = 0;
+		pthread_kill(cpu->thread, SIGUSR1);
+		/*
+		 * Wait for the vCPU to dump state before signalling
+		 * the next thread. Since this is debug code it does
+		 * not matter that we are burning CPU time a bit:
+		 */
+		while (!printout_done)
+			mb();
 	}
 
 	serial8250__inject_sysrq(kvm);
@@ -148,7 +199,7 @@ static void *kvm_cpu_thread(void *arg)
 	return (void *) (intptr_t) 0;
 
 panic_kvm:
-	fprintf(stderr, "KVM exit reason: %" PRIu32 " (\"%s\")\n",
+	fprintf(stderr, "KVM exit reason: %u (\"%s\")\n",
 		current_kvm_cpu->kvm_run->exit_reason,
 		kvm_exit_reasons[current_kvm_cpu->kvm_run->exit_reason]);
 	if (current_kvm_cpu->kvm_run->exit_reason == KVM_EXIT_UNKNOWN)
@@ -201,6 +252,39 @@ static void kernel_usage_with_options(void)
 	fprintf(stderr, "\nPlease see 'kvm run --help' for more options.\n\n");
 }
 
+static u64 host_ram_size(void)
+{
+	long page_size;
+	long nr_pages;
+
+	nr_pages	= sysconf(_SC_PHYS_PAGES);
+
+	page_size	= sysconf(_SC_PAGE_SIZE);
+
+	return (nr_pages * page_size) >> MB_SHIFT;
+}
+
+/*
+ * If user didn't specify how much memory it wants to allocate for the guest,
+ * avoid filling the whole host RAM.
+ */
+#define RAM_SIZE_RATIO		0.8
+
+static u64 get_ram_size(int nr_cpus)
+{
+	long available;
+	long ram_size;
+
+	ram_size	= 64 * (nr_cpus + 3);
+
+	available	= host_ram_size() * RAM_SIZE_RATIO;
+
+	if (ram_size > available)
+		ram_size	= available;
+
+	return ram_size;
+}
+
 static const char *find_kernel(void)
 {
 	const char **k;
@@ -237,56 +321,14 @@ static const char *find_kernel(void)
 
 static int root_device(char *dev, long *part)
 {
-	FILE   *fp;
-	char   *line;
-	int    tmp;
-	size_t nr_read;
-	char   device[PATH_MAX];
-	char   mnt_pt[PATH_MAX];
-	char   resolved_path[PATH_MAX];
-	char   *p;
 	struct stat st;
 
-	fp = fopen("/proc/mounts", "r");
-	if (!fp)
+	if (stat("/", &st) < 0)
 		return -1;
 
-	line = NULL;
-	tmp  = 0;
-	while (!feof(fp)) {
-		if (getline(&line, &nr_read, fp) < 0)
-			break;
-		sscanf(line, "%s %s", device, mnt_pt);
-		if (!strncmp(device, "/dev", 4) && !strcmp(mnt_pt, "/")) {
-			tmp = 1;
-			break;
-		}
-	}
-	fclose(fp);
-	free(line);
+	*part = minor(st.st_dev);
 
-	if (!tmp)
-		return -1;
-
-	/* get the absolute path */
-	if (!realpath(device, resolved_path))
-		return -1;
-
-	/* find the partition number */
-	p = resolved_path;
-	while (*p) {
-		if (isdigit(*p)) {
-			strncpy(dev, resolved_path, p - resolved_path);
-			*part = atol(p);
-			break;
-		}
-		p++;
-	}
-
-	/* verify the device path */
-	if (stat(dev, &st) < 0)
-		return -1;
-
+	sprintf(dev, "/dev/block/%u:0", major(st.st_dev));
 	if (access(dev, R_OK) < 0)
 		return -1;
 
@@ -320,14 +362,16 @@ static char *host_image(char *cmd_line, size_t size)
 int kvm_cmd_run(int argc, const char **argv, const char *prefix)
 {
 	static char real_cmdline[2048];
+	unsigned int nr_online_cpus;
+	int max_cpus;
 	int exit_code = 0;
 	int i;
 	struct virtio_net_parameters net_params;
 	char *hi;
-	unsigned int nr_online_cpus;
 
 	signal(SIGALRM, handle_sigalrm);
 	signal(SIGQUIT, handle_sigquit);
+	signal(SIGUSR1, handle_sigusr1);
 
 	while (argc != 0) {
 		argc = parse_options(argc, argv, options, run_usage,
@@ -360,14 +404,14 @@ int kvm_cmd_run(int argc, const char **argv, const char *prefix)
 	if (nrcpus < 1 || nrcpus > KVM_NR_CPUS)
 		die("Number of CPUs %d is out of [1;%d] range", nrcpus, KVM_NR_CPUS);
 
-	/* FIXME: Remove as only SMP gets fully supported */
-	if (nrcpus > 1) {
-		warning("Limiting CPUs to 1, true SMP is not yet implemented");
-		nrcpus = 1;
-	}
+	if (!ram_size)
+		ram_size	= get_ram_size(nrcpus);
 
 	if (ram_size < MIN_RAM_SIZE_MB)
 		die("Not enough memory specified: %lluMB (min %lluMB)", ram_size, MIN_RAM_SIZE_MB);
+
+	if (ram_size > host_ram_size())
+		warning("Guest memory size %lluMB exceeds host physical RAM size %lluMB", ram_size, host_ram_size());
 
 	ram_size <<= MB_SHIFT;
 
@@ -395,30 +439,45 @@ int kvm_cmd_run(int argc, const char **argv, const char *prefix)
 
 	kvm = kvm__init(kvm_dev, ram_size);
 
+	max_cpus = kvm__max_cpus(kvm);
+
+	if (nrcpus > max_cpus) {
+		printf("  # Limit the number of CPUs to %d\n", max_cpus);
+		kvm->nrcpus	= max_cpus;
+	}
+
 	kvm->nrcpus = nrcpus;
 
 	memset(real_cmdline, 0, sizeof(real_cmdline));
 //	strcpy(real_cmdline, "notsc nolapic noacpi pci=conf1 console=ttyS0 ");
 	strcpy(real_cmdline, "notsc nolapic noacpi pci=conf1 ");
+//	strcpy(real_cmdline, "notsc noapic noacpi pci=conf1 console=ttyS0 earlyprintk=serial");
+//	strcat(real_cmdline, " ");
+
 	if (kernel_cmdline)
 		strlcat(real_cmdline, kernel_cmdline, sizeof(real_cmdline));
 
 	hi = NULL;
-	if (!image_filename) {
+	if (!image_filename[0]) {
 		hi = host_image(real_cmdline, sizeof(real_cmdline));
 		if (hi) {
-			image_filename = hi;
-			readonly_image = true;
+			image_filename[0] = hi;
+			readonly_image[0] = true;
+			image_count++;
 		}
 	}
 
 	if (!strstr(real_cmdline, "root="))
 		strlcat(real_cmdline, " root=/dev/vda rw ", sizeof(real_cmdline));
 
-	if (image_filename) {
-		kvm->disk_image	= disk_image__open(image_filename, readonly_image);
-		if (!kvm->disk_image)
-			die("unable to load disk image %s", image_filename);
+	for (i = 0; i < image_count; i++) {
+		if (image_filename[i]) {
+			struct disk_image *disk = disk_image__open(image_filename[i], readonly_image[i]);
+			if (!disk)
+				die("unable to load disk image %s", image_filename[i]);
+
+			virtio_blk__init(kvm, disk);
+		}
 	}
 	free(hi);
 
@@ -430,15 +489,12 @@ int kvm_cmd_run(int argc, const char **argv, const char *prefix)
 
 	rtc__init();
 
-	kvm__setup_bios(kvm);
-
 	serial8250__init(kvm);
 
 	pci__init();
 
-	virtio_blk__init(kvm);
-
-	virtio_console__init(kvm);
+	if (active_console == CONSOLE_VIRTIO)
+		virtio_console__init(kvm);
 
 	dummy_vesa__init(kvm);
 
@@ -466,6 +522,8 @@ int kvm_cmd_run(int argc, const char **argv, const char *prefix)
 	}
 
 	kvm__start_timer(kvm);
+
+	kvm__setup_bios(kvm);
 
 	for (i = 0; i < nrcpus; i++) {
 		kvm_cpus[i] = kvm_cpu__init(kvm, i);
@@ -502,7 +560,6 @@ int kvm_cmd_run(int argc, const char **argv, const char *prefix)
 			exit_code	= 1;
 	}
 
-	disk_image__close(kvm->disk_image);
 	kvm__delete(kvm);
 
 	if (!exit_code)

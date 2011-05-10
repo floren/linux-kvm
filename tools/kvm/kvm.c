@@ -11,7 +11,6 @@
 #include <asm/bootparam.h>
 
 #include <sys/ioctl.h>
-#include <inttypes.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <stdbool.h>
@@ -115,7 +114,7 @@ void kvm__delete(struct kvm *self)
 static bool kvm__cpu_supports_vm(void)
 {
 	struct cpuid_regs regs;
-	uint32_t eax_base;
+	u32 eax_base;
 	int feature;
 
 	regs	= (struct cpuid_regs) {
@@ -169,6 +168,17 @@ void kvm__init_ram(struct kvm *self)
 	ret = ioctl(self->vm_fd, KVM_SET_USER_MEMORY_REGION, &mem);
 	if (ret < 0)
 		die_perror("KVM_SET_USER_MEMORY_REGION ioctl");
+}
+
+int kvm__max_cpus(struct kvm *self)
+{
+	int ret;
+
+	ret = ioctl(self->sys_fd, KVM_CHECK_EXTENSION, KVM_CAP_NR_VCPUS);
+	if (ret < 0)
+		die_perror("KVM_CAP_NR_VCPUS");
+
+	return ret;
 }
 
 struct kvm *kvm__init(const char *kvm_dev, unsigned long ram_size)

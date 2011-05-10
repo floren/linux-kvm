@@ -5,6 +5,11 @@
 
 /*
 static const char *to_direction(uint8_t is_write)
+=======
+#include <linux/types.h>
+
+static const char *to_direction(u8 is_write)
+>>>>>>> 1d8d90dfa775adaf7348e125a148b6e5ed4f698e
 {
 	if (is_write)
 		return "write";
@@ -15,7 +20,7 @@ static const char *to_direction(uint8_t is_write)
 
 uint8_t videomem[2000000];
 
-bool kvm__emulate_mmio(struct kvm *self, uint64_t phys_addr, uint8_t *data, uint32_t len, uint8_t is_write)
+bool kvm__emulate_mmio(struct kvm *self, u64 phys_addr, u8 *data, u32 len, u8 is_write)
 {
 	uint32_t ptr;
 
