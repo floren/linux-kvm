@@ -63,6 +63,7 @@
 /* Keyboard Commands */
 #define KBD_CMD_SET_LEDS	0xED	/* Set keyboard leds */
 #define KBD_CMD_ECHO     	0xEE
+#define KBD_CMD_SCANCODE	0xF0	/* Get/set scancode set */
 #define KBD_CMD_GET_ID 	        0xF2	/* get keyboard ID */
 #define KBD_CMD_SET_RATE	0xF3	/* Set typematic rate */
 #define KBD_CMD_ENABLE		0xF4	/* Enable scanning */
@@ -126,6 +127,28 @@
 #define KBD_PENDING_KBD         1
 #define KBD_PENDING_AUX         2
 
+/* Table to convert from PC scancodes to raw scancodes.  */
+static const unsigned char ps2_raw_keycode[128] = {
+  0, 118,  22,  30,  38,  37,  46,  54,  61,  62,  70,  69,  78,  85, 102,  13,
+ 21,  29,  36,  45,  44,  53,  60,  67,  68,  77,  84,  91,  90,  20,  28,  27,
+ 35,  43,  52,  51,  59,  66,  75,  76,  82,  14,  18,  93,  26,  34,  33,  42,
+ 50,  49,  58,  65,  73,  74,  89, 124,  17,  41,  88,   5,   6,   4,  12,   3,
+ 11,   2,  10,   1,   9, 119, 126, 108, 117, 125, 123, 107, 115, 116, 121, 105,
+114, 122, 112, 113, 127,  96,  97, 120,   7,  15,  23,  31,  39,  47,  55,  63,
+ 71,  79,  86,  94,   8,  16,  24,  32,  40,  48,  56,  64,  72,  80,  87, 111,
+ 19,  25,  57,  81,  83,  92,  95,  98,  99, 100, 101, 103, 104, 106, 109, 110
+};
+static const unsigned char ps2_raw_keycode_set3[128] = {
+  0,   8,  22,  30,  38,  37,  46,  54,  61,  62,  70,  69,  78,  85, 102,  13,
+ 21,  29,  36,  45,  44,  53,  60,  67,  68,  77,  84,  91,  90,  17,  28,  27,
+ 35,  43,  52,  51,  59,  66,  75,  76,  82,  14,  18,  92,  26,  34,  33,  42,
+ 50,  49,  58,  65,  73,  74,  89, 126,  25,  41,  20,   7,  15,  23,  31,  39,
+ 47,   2,  63,  71,  79, 118,  95, 108, 117, 125, 132, 107, 115, 116, 124, 105,
+114, 122, 112, 113, 127,  96,  97,  86,  94,  15,  23,  31,  39,  47,  55,  63,
+ 71,  79,  86,  94,   8,  16,  24,  32,  40,  48,  56,  64,  72,  80,  87, 111,
+ 19,  25,  57,  81,  83,  92,  95,  98,  99, 100, 101, 103, 104, 106, 109, 110
+};
+
 typedef struct KBDState {
     int32_t write_cmd; /* if non zero, write data to port 60 is expected */
     uint8_t status;
@@ -135,6 +158,11 @@ typedef struct KBDState {
     uint8_t pending;
     void *kbd;
     void *mouse;
+
+	int translate;
+	int scan_enabled;
+	int scancode_set;
+
 
 //    qemu_irq irq_kbd;
 //    qemu_irq irq_mouse;
@@ -166,17 +194,17 @@ static void kbd_update_irq(struct kvm *self)
     }
 	kvm__irq_line(self, 1, irq_kbd_level);
 }
-//
-//static void kbd_update_kbd_irq(void *opaque, int level)
-//{
-//    KBDState *s = (KBDState *)opaque;
-//
-//    if (level)
-//        s->pending |= KBD_PENDING_KBD;
-//    else
-//        s->pending &= ~KBD_PENDING_KBD;
-//    kbd_update_irq(s);
-//}
+
+void kbd_update_kbd_irq(struct kvm *self, int level)
+{
+    KBDState *s = &state;
+
+    if (level)
+        s->pending |= KBD_PENDING_KBD;
+    else
+        s->pending &= ~KBD_PENDING_KBD;
+    kbd_update_irq(self);
+}
 //
 //static void kbd_update_aux_irq(void *opaque, int level)
 //{
@@ -222,7 +250,7 @@ void kbd_queue(struct kvm *self, int b)
 		kbdqueue.wptr = 0;
 	kbdqueue.count++;
 	// update_irqs?
-	kbd_update_irq(self);
+	kbd_update_kbd_irq(self, 1);
 }
 
 uint32_t kbd_read_data(struct kvm *self)
@@ -244,12 +272,12 @@ uint32_t kbd_read_data(struct kvm *self)
 			q->rptr = 0;
 		q->count--;
 		/* reading deasserts IRQ */
-//		s->update_irq(s->update_arg, 0);
+		kbd_update_kbd_irq(self, 0);
 		/* reassert IRQs if data left */
-//		s->update_irq(s->update_arg, q->count != 0);
+		kbd_update_kbd_irq(self, q->count != 0);
 //		kbd_update_irq(self);
-		kvm__irq_line(self, 1, 0);
-		kvm__irq_line(self, 1, q->count != 0);
+//		kvm__irq_line(self, 1, 0);
+//		kvm__irq_line(self, 1, q->count != 0);
 	}
 	return val;
 }
@@ -348,9 +376,32 @@ void kbd_write_command(struct kvm *self, uint32_t addr, uint32_t val)
     }
 }
 
+/*
+   keycode is expressed as follow:
+   bit 7    - 0 key pressed, 1 = key released
+   bits 6-0 - translated scancode set 2
+ */
+static void ps2_put_keycode(struct kvm *self, int keycode)
+{
+    KBDState *s = &state;
+
+    /* XXX: add support for scancode set 1 */
+    if (!s->translate && keycode < 0xe0 && s->scancode_set > 1) {
+        if (keycode & 0x80) {
+            kbd_queue(self, 0xf0);
+        }
+        if (s->scancode_set == 2) {
+            keycode = ps2_raw_keycode[keycode & 0x7f];
+        } else if (s->scancode_set == 3) {
+            keycode = ps2_raw_keycode_set3[keycode & 0x7f];
+        }
+      }
+    kbd_queue(self, keycode);
+}
+
 void ps2_write_keyboard(struct kvm *self, int val)
 {
-
+	KBDState *s = &state;
     switch(state.write_cmd) {
     default:
     case -1:
@@ -365,19 +416,19 @@ void ps2_write_keyboard(struct kvm *self, int val)
             kbd_queue(self, KBD_REPLY_ACK);
             /* We emulate a MF2 AT keyboard here */
             kbd_queue(self, KBD_REPLY_ID);
-//            if (s->translate)
-//                kbd_queue(self, 0x41);
- //           else
+            if (s->translate)
+                kbd_queue(self, 0x41);
+            else
                 kbd_queue(self, 0x83);
             break;
         case KBD_CMD_ECHO:
             kbd_queue(self, KBD_CMD_ECHO);
             break;
         case KBD_CMD_ENABLE:
-//            s->scan_enabled = 1;
+            s->scan_enabled = 1;
             kbd_queue(self, KBD_REPLY_ACK);
             break;
-//        case KBD_CMD_SCANCODE:
+        case KBD_CMD_SCANCODE:
         case KBD_CMD_SET_LEDS:
         case KBD_CMD_SET_RATE:
             state.write_cmd = val;
@@ -385,12 +436,12 @@ void ps2_write_keyboard(struct kvm *self, int val)
             break;
         case KBD_CMD_RESET_DISABLE:
 //            ps2_reset_keyboard(s);
-//            s->scan_enabled = 0;
+            s->scan_enabled = 0;
             kbd_queue(self, KBD_REPLY_ACK);
             break;
         case KBD_CMD_RESET_ENABLE:
 //            ps2_reset_keyboard(s);
-//            s->scan_enabled = 1;
+            s->scan_enabled = 1;
             kbd_queue(self, KBD_REPLY_ACK);
             break;
         case KBD_CMD_RESET:
@@ -403,15 +454,15 @@ void ps2_write_keyboard(struct kvm *self, int val)
             break;
         }
         break;
-/*
+
     case KBD_CMD_SCANCODE:
         if (val == 0) {
             if (s->scancode_set == 1)
-                ps2_put_keycode(s, 0x43);
+                ps2_put_keycode(self, 0x43);
             else if (s->scancode_set == 2)
-                ps2_put_keycode(s, 0x41);
+                ps2_put_keycode(self, 0x41);
             else if (s->scancode_set == 3)
-                ps2_put_keycode(s, 0x3f);
+                ps2_put_keycode(self, 0x3f);
         } else {
             if (val >= 1 && val <= 3)
                 s->scancode_set = val;
@@ -419,7 +470,7 @@ void ps2_write_keyboard(struct kvm *self, int val)
         }
         state.write_cmd = -1;
         break;
-*/
+
     case KBD_CMD_SET_LEDS:
 //        kbd_put_ledstate(val);
         kbd_queue(self, KBD_REPLY_ACK);
@@ -432,19 +483,24 @@ void ps2_write_keyboard(struct kvm *self, int val)
     }
 }
 
-static void kbd_write_data(struct kvm *self, uint32_t addr, uint32_t val)
+void ps2_keyboard_set_translation(int mode)
+{
+    state.translate = mode;
+}
+
+void kbd_write_data(struct kvm *self, uint32_t addr, uint32_t val)
 {
     KBDState *s = &state;
 
-    DPRINTF("kbd: write data=0x%02x\n", val);
+	printf("data = 0x%x, write_cmd = 0x%x\n", val, s->write_cmd);
 
     switch(s->write_cmd) {
     case 0:
-        ps2_write_keyboard(s->kbd, val);
+        ps2_write_keyboard(self, val);
         break;
     case KBD_CCMD_WRITE_MODE:
         s->mode = val;
-        ps2_keyboard_set_translation(s->kbd, (s->mode & KBD_MODE_KCC) != 0);
+        ps2_keyboard_set_translation((s->mode & KBD_MODE_KCC) != 0);
         /* ??? */
         kbd_update_irq(self);
         break;
@@ -455,7 +511,7 @@ static void kbd_write_data(struct kvm *self, uint32_t addr, uint32_t val)
         kbd_queue(self, val);
         break;
     case KBD_CCMD_WRITE_OUTPORT:
-        outport_write(self, val);
+//        outport_write(self, val);
         break;
 /*
     case KBD_CCMD_WRITE_MOUSE:

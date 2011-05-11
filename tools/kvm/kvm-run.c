@@ -542,7 +542,7 @@ int kvm_cmd_run(int argc, const char **argv, const char *prefix)
 	if (vnc) {
 		kbd_init(kvm);
 		pthread_t thread;
-		pthread_create(&thread, NULL, dovnc, NULL);
+		pthread_create(&thread, NULL, dovnc, kvm);
 	}
 
 	for (i = 0; i < nrcpus; i++) {

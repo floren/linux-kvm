@@ -9,6 +9,7 @@
 #include "kvm/kvm.h"
 #include "kvm/pci.h"
 #include "kvm/kvm-cpu.h"
+#include "kvm/irq.h"
 
 #include <rfb/rfb.h>
 
@@ -31,12 +32,12 @@ struct vesa_device {
 	pthread_mutex_t			mutex;
 };
 
-static bool dummy_vesa_pci_io_in(struct kvm *self, uint16_t port, void *data, int size, uint32_t count)
+static bool dummy_vesa_pci_io_in(struct kvm *self, u16 port, void *data, int size, u32 count)
 {
 	return true;
 }
 
-static bool dummy_vesa_pci_io_out(struct kvm *self, uint16_t port, void *data, int size, uint32_t count)
+static bool dummy_vesa_pci_io_out(struct kvm *self, u16 port, void *data, int size, u32 count)
 {
 	return true;
 }
@@ -61,17 +62,24 @@ static struct pci_device_header dummy_vesa_pci_device = {
 	.subsys_id		= PCI_SUBSYSTEM_ID_DUMMY_VESA,
 	.bar[0]			= IOPORT_DUMMY_VESA | PCI_BASE_ADDRESS_SPACE_IO,
 	.bar[1]			= VESA_MEM_ADDR,
-	.irq_pin		= 4,
-	.irq_line		= DUMMY_VESA_IRQ,
+//	.irq_pin		= 4,
+//	.irq_line		= DUMMY_VESA_IRQ,
 };
 
 #define PCI_DUMMY_VESA_DEVNUM 4
 void dummy_vesa__init(struct kvm *self)
 {
+	u8 dev,line,pin;
+
 	int ret = -ENOSYS;
 	struct kvm_coalesced_mmio_zone zone;
 
-	pci__register(&dummy_vesa_pci_device, PCI_DUMMY_VESA_DEVNUM);
+	if (irq__register_device(PCI_DEVICE_ID_DUMMY_VESA, &dev, &pin, &line) < 0)
+		return;
+
+	dummy_vesa_pci_device.irq_pin = pin;
+	dummy_vesa_pci_device.irq_line = line;
+	pci__register(&dummy_vesa_pci_device, dev);
 	ioport__register(IOPORT_DUMMY_VESA, &dummy_vesa_io_ops, IOPORT_DUMMY_VESA_SIZE);
 
 	zone.addr = VESA_MEM_ADDR;
@@ -89,21 +97,29 @@ void dummy_vesa__init(struct kvm *self)
 static int kbd_char;
 static char kbd_status;
 static char kbd_command;
+static struct kvm *self;
+
+unsigned char kbdus[128] =
+{
+	
+};		
 
 static void dokey(rfbBool down,rfbKeySym key,rfbClientPtr cl)
 {
 	kbd_char = key;
 	printf("read key %x\n", key);
+	kbd_queue(self, 0x1c);
 }
 
 void kbd__inject_interrupt(struct kvm *self)
 {
-	kvm__irq_line(self, 1, 0);
-	kvm__irq_line(self, 1, 1);
+//	kvm__irq_line(self, 1, 0);
+//	kvm__irq_line(self, 1, 1);
 }
 
 void* dovnc(void* v)
 {
+	self = (struct kvm*)v;
 	/* I make a fake argc and argv because the getscreen function seems to want it */
 	int ac = 1;
 	char **av;
@@ -128,13 +144,13 @@ static bool kbd_in(struct kvm *self, uint16_t port, void *data, int size, uint32
 		//ioport__write8(data, 0xfa);
 		//printf("saying status = 0x14\n");
 		result = kbd_read_status();
-		printf("read 0x%x from port 0x%x\n", result, port);
+//		printf("read 0x%x from port 0x%x\n", result, port);
 		ioport__write8(data, (char)result);
 	} else {
 		//ioport__write8(data, kbd_char);
 		result = kbd_read_data(self);
 		printf("read 0x%x from port 0x%x\n", result, port);
-		ioport__write8(data, (char)result);
+		ioport__write32(data, result);
 		//printf("durp reading from port 0x60\n");
 	}
 	//printf("kbd_in port = %x data = %x\n", port, *(uint32_t*)data);
@@ -147,6 +163,8 @@ static bool kbd_out(struct kvm *self, uint16_t port, void *data, int size, uint3
 	if (port == 0x64) {
 		//in = ioport__read8(data);
 		kbd_write_command(self, (uint32_t)data, *((uint32_t*)data));
+	} else {
+		kbd_write_data(self, (uint32_t)data, *((uint32_t*)data));
 	}
 	printf("kbd_out port = %x data = %x\n", port, *(uint32_t*)data);
 	return true;
