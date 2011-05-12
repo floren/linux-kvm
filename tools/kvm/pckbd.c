@@ -602,10 +602,11 @@ void dokey(rfbBool down, rfbKeySym key, rfbClientPtr cl)
 			break;
 	}
 
-	if (!down)
+	if (!down && tosend != 0x0)
 		kbd_queue(self, 0xf0);
 
-	kbd_queue(self, tosend);
+	if (tosend)
+		kbd_queue(self, tosend);
 }
 
 static bool kbd_in(struct kvm *self, uint16_t port, void *data, int size, uint32_t count)

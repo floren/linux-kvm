@@ -106,7 +106,7 @@ void* dovnc(void* v)
 	rfbInitServer(server);
 	while (rfbIsActive(server)) {
 		rfbMarkRectAsModified(server, 0, 0, VESA_WIDTH, VESA_HEIGHT);
-		rfbProcessEvents(server, server->deferUpdateTime*1000);
+		rfbProcessEvents(server, server->deferUpdateTime*8000);
 	}
 	return NULL;
 }
