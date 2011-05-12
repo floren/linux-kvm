@@ -174,7 +174,6 @@ void kbd_write_command(struct kvm *self, uint32_t addr, uint32_t val)
 
 	switch(val) {
 	case KBD_CCMD_READ_MODE:
-	printf("KBD_CCMD_READ_MODE\n");
 		kbd_queue(self, s->mode);
 		break;
 	case KBD_CCMD_WRITE_MODE:
@@ -233,7 +232,7 @@ void kbd_write_command(struct kvm *self, uint32_t addr, uint32_t val)
 		/* ignore that */
 		break;
 	default:
-		fprintf(stderr, "qemu: unsupported keyboard cmd=0x%02x\n", val);
+		fprintf(stderr, "unsupported keyboard cmd=0x%02x\n", val);
 		break;
 	}
 }
@@ -354,8 +353,6 @@ void kbd_write_data(struct kvm *self, uint32_t addr, uint32_t val)
 {
 	KBDState *s = &state;
 
-	printf("data = 0x%x, write_cmd = 0x%x\n", val, s->write_cmd);
-
 	switch(s->write_cmd) {
 	case 0:
 		ps2_write_keyboard(self, val);
@@ -413,7 +410,6 @@ static char num[10] = {
 void dokey(rfbBool down, rfbKeySym key, rfbClientPtr cl)
 {
 	char tosend = 0; // set it to 0 at first
-	printf("read key %x\n", key);
 
 	if (key >= 0x41 && key <= 0x5a)
 		key += 0x20; // convert to lowercase
