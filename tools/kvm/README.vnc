@@ -1,0 +1,28 @@
+I have added basic VNC functionality, allowing you to get a
+framebuffer console over VNC and interact with it via the
+mouse. You'll need the libvncserver library in order to build.
+
+To use it, build a kernel including the following options:
+	CONFIG_FB_BOOT_VESA_SUPPORT=y
+	CONFIG_FB_VESA=y
+
+You'll need to set the video mode directly into the kernel binary
+using rdev. The appropriate mode is 786, so do something like this:
+
+	% /usr/sbin/rdev -v path/to/kernel/bzImage 786
+
+Then start kvm like this:
+
+	% ./kvm run --kernel path/to/kernel/bzImage -i linux-0.2.img -p "console=tty0 video=vesafb" --vnc
+
+You should see a message saying that it is listening for VNC
+connections on TCP port 5900. Start a VNC client and connect to
+localhost:0, like this:
+
+	% vncviewer :0
+
+You can now type at the console. Scrolling is very slow, but otherwise
+the display is quite quick.
+
+When you're ready to be done, hit Ctrl-D or type "exit" in the VNC window.
+

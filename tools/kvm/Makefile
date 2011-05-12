@@ -12,7 +12,6 @@ FIND = find
 CSCOPE = cscope
 TAGS = ctags
 
-#OBJS += ps2.o
 OBJS += pckbd.o
 OBJS += dummy-vesa.o
 OBJS	+= 8250-serial.o
