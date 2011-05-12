@@ -1,4 +1,12 @@
 /*
+ * PS/2 keyboard for KVM. The majority of the logic in here comes straight
+ * from QEMU; I condensed the keyboard parts of pckbd.c and ps2.c into this
+ * single file to provide just one PS/2 keyboard.
+ * Since it comes largely from QEMU, I have left the original header below.
+ * John Floren (2011)
+ */
+
+/*
  * QEMU PC keyboard emulation
  *
  * Copyright (c) 2003 Fabrice Bellard
