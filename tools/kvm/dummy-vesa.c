@@ -10,6 +10,7 @@
 #include "kvm/pci.h"
 #include "kvm/kvm-cpu.h"
 #include "kvm/irq.h"
+#include "kvm/pckbd.h"
 
 #include <rfb/rfb.h>
 
@@ -91,35 +92,8 @@ void dummy_vesa__init(struct kvm *self)
  * This starts a VNC server to display the framebuffer.
  * It's not altogether clear this belongs here rather than in kvm-run.c
  */
-#include <rfb/keysym.h>
-#include "pckbd.h"
-
-static int kbd_char;
-static char kbd_status;
-static char kbd_command;
-static struct kvm *self;
-
-unsigned char kbdus[128] =
-{
-	
-};		
-
-static void dokey(rfbBool down,rfbKeySym key,rfbClientPtr cl)
-{
-	kbd_char = key;
-	printf("read key %x\n", key);
-	kbd_queue(self, 0x1c);
-}
-
-void kbd__inject_interrupt(struct kvm *self)
-{
-//	kvm__irq_line(self, 1, 0);
-//	kvm__irq_line(self, 1, 1);
-}
-
 void* dovnc(void* v)
 {
-	self = (struct kvm*)v;
 	/* I make a fake argc and argv because the getscreen function seems to want it */
 	int ac = 1;
 	char **av;
@@ -137,48 +111,4 @@ void* dovnc(void* v)
 	return NULL;
 }
 
-static bool kbd_in(struct kvm *self, uint16_t port, void *data, int size, uint32_t count)
-{
-	uint32_t result;
-	if (port == 0x64) {
-		//ioport__write8(data, 0xfa);
-		//printf("saying status = 0x14\n");
-		result = kbd_read_status();
-//		printf("read 0x%x from port 0x%x\n", result, port);
-		ioport__write8(data, (char)result);
-	} else {
-		//ioport__write8(data, kbd_char);
-		result = kbd_read_data(self);
-		printf("read 0x%x from port 0x%x\n", result, port);
-		ioport__write32(data, result);
-		//printf("durp reading from port 0x60\n");
-	}
-	//printf("kbd_in port = %x data = %x\n", port, *(uint32_t*)data);
-	return true;
-}
 
-static bool kbd_out(struct kvm *self, uint16_t port, void *data, int size, uint32_t count)
-{
-	char in;
-	if (port == 0x64) {
-		//in = ioport__read8(data);
-		kbd_write_command(self, (uint32_t)data, *((uint32_t*)data));
-	} else {
-		kbd_write_data(self, (uint32_t)data, *((uint32_t*)data));
-	}
-	printf("kbd_out port = %x data = %x\n", port, *(uint32_t*)data);
-	return true;
-}
-
-static struct ioport_operations kbd_ops = {
-	.io_in		= kbd_in,
-	.io_out		= kbd_out,
-};
-
-void kbd_init(struct kvm *kvm)
-{
-	ioport__register(0x60, &kbd_ops, 2);
-	ioport__register(0x64, &kbd_ops, 2);
-	kbd_reset();
-	kvm__irq_line(kvm, 1, 0);
-}

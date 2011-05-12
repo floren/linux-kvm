@@ -28,6 +28,7 @@
 #include <kvm/dummy-vesa.h>
 #include <kvm/threadpool.h>
 #include <kvm/barrier.h>
+#include <kvm/pckbd.h>
 
 /* header files for gitish interface  */
 #include <kvm/kvm-run.h>
@@ -184,7 +185,6 @@ static void handle_sigalrm(int sig)
 {
 	serial8250__inject_interrupt(kvm);
 	virtio_console__inject_interrupt(kvm);
-	kbd__inject_interrupt(kvm);
 }
 
 static void *kvm_cpu_thread(void *arg)
