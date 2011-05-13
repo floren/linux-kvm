@@ -15,6 +15,7 @@
 #include <stdlib.h>
 #include <stdarg.h>
 #include <string.h>
+#include <stdbool.h>
 #include <errno.h>
 #include <limits.h>
 #include <sys/param.h>
@@ -29,12 +30,24 @@
 #endif
 #endif
 
+extern bool do_debug_print;
+
+#define PROT_RW (PROT_READ|PROT_WRITE)
+#define MAP_ANON_NORESERVE (MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE)
+
 extern void die(const char *err, ...) NORETURN __attribute__((format (printf, 1, 2)));
 extern void die_perror(const char *s) NORETURN;
 extern int error(const char *err, ...) __attribute__((format (printf, 1, 2)));
 extern void warning(const char *err, ...) __attribute__((format (printf, 1, 2)));
 extern void info(const char *err, ...) __attribute__((format (printf, 1, 2)));
 extern void set_die_routine(void (*routine)(const char *err, va_list params) NORETURN);
+
+#define debug(fmt, ...)							\
+	do {								\
+		if (do_debug_print)					\
+			info("(%s) %s:%d: " fmt, __FILE__,		\
+				__func__, __LINE__, ##__VA_ARGS__);	\
+	} while (0)
 
 #define BUILD_BUG_ON(condition) ((void)sizeof(char[1 - 2*!!(condition)]))
 

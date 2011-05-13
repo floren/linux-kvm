@@ -2,6 +2,7 @@
 #define KVM__VIRTIO_H
 
 #include <linux/virtio_ring.h>
+#include <linux/virtio_pci.h>
 
 #include <linux/types.h>
 #include <sys/uio.h>
@@ -34,6 +35,16 @@ static inline bool virt_queue__available(struct virt_queue *vq)
 	if (!vq->vring.avail)
 		return 0;
 	return vq->vring.avail->idx !=  vq->last_avail_idx;
+}
+
+/*
+ * Warning: on 32-bit hosts, shifting pfn left may cause a truncation of pfn values
+ * higher than 4GB - thus, pointing to the wrong area in guest virtual memory space
+ * and breaking the virt queue which owns this pfn.
+ */
+static inline void *guest_pfn_to_host(struct kvm *kvm, u32 pfn)
+{
+	return guest_flat_to_host(kvm, (unsigned long)pfn << VIRTIO_PCI_QUEUE_ADDR_SHIFT);
 }
 
 struct vring_used_elem *virt_queue__set_used_elem(struct virt_queue *queue, u32 head, u32 len);

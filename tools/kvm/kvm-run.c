@@ -29,6 +29,7 @@
 #include <kvm/threadpool.h>
 #include <kvm/barrier.h>
 #include <kvm/pckbd.h>
+#include <kvm/symbol.h>
 
 /* header files for gitish interface  */
 #include <kvm/kvm-run.h>
@@ -55,6 +56,7 @@ static u64 ram_size;
 static u8  image_count;
 static const char *kernel_cmdline;
 static const char *kernel_filename;
+static const char *vmlinux_filename;
 static const char *initrd_filename;
 static const char *image_filename[MAX_DISK_IMAGES];
 static const char *console;
@@ -69,6 +71,8 @@ static bool virtio_rng;
 static bool vnc;
 extern bool ioport_debug;
 extern int  active_console;
+
+bool do_debug_print = false;
 
 static int nrcpus = 1;
 
@@ -99,10 +103,10 @@ static int img_name_parser(const struct option *opt, const char *arg, int unset)
 
 static const struct option options[] = {
 	OPT_GROUP("Basic options:"),
-	OPT_INTEGER('\0', "cpus", &nrcpus, "Number of CPUs"),
+	OPT_INTEGER('c', "cpus", &nrcpus, "Number of CPUs"),
 	OPT_U64('m', "mem", &ram_size, "Virtual machine memory size in MiB."),
 	OPT_CALLBACK('i', "image", NULL, "image", "Disk image", img_name_parser),
-	OPT_STRING('c', "console", &console, "serial or virtio",
+	OPT_STRING('\0', "console", &console, "serial or virtio",
 			"Console to use"),
 	OPT_BOOLEAN('\0', "virtio-rng", &virtio_rng,
 			"Enable virtio Random Number Generator"),
@@ -130,8 +134,9 @@ static const struct option options[] = {
 			"Enable single stepping"),
 	OPT_BOOLEAN('g', "ioport-debug", &ioport_debug,
 			"Enable ioport debugging"),
-
 	OPT_BOOLEAN('\0', "vnc", &vnc, "Enable VNC framebuffer"),
+	OPT_BOOLEAN('\0', "debug", &do_debug_print,
+			"Enable debug messages"),
 	OPT_END()
 };
 
@@ -216,14 +221,22 @@ panic_kvm:
 }
 
 static char kernel[PATH_MAX];
-const char *host_kernels[] = {
+
+static const char *host_kernels[] = {
 	"/boot/vmlinuz",
 	"/boot/bzImage",
 	NULL
 };
-const char *default_kernels[] = {
+
+static const char *default_kernels[] = {
 	"./bzImage",
 	"../../arch/x86/boot/bzImage",
+	NULL
+};
+
+static const char *default_vmlinux[] = {
+	"../../../vmlinux",
+	"../../vmlinux",
 	NULL
 };
 
@@ -319,6 +332,23 @@ static const char *find_kernel(void)
 	return NULL;
 }
 
+static const char *find_vmlinux(void)
+{
+	const char **vmlinux;
+
+	vmlinux = &default_vmlinux[0];
+	while (*vmlinux) {
+		struct stat st;
+
+		if (stat(*vmlinux, &st) < 0 || !S_ISREG(st.st_mode)) {
+			vmlinux++;
+			continue;
+		}
+		return *vmlinux;
+	}
+	return NULL;
+}
+
 static int root_device(char *dev, long *part)
 {
 	struct stat st;
@@ -361,13 +391,13 @@ static char *host_image(char *cmd_line, size_t size)
 
 int kvm_cmd_run(int argc, const char **argv, const char *prefix)
 {
+	struct virtio_net_parameters net_params;
 	static char real_cmdline[2048];
 	unsigned int nr_online_cpus;
-	int max_cpus;
 	int exit_code = 0;
-	int i;
-	struct virtio_net_parameters net_params;
+	int max_cpus;
 	char *hi;
+	int i;
 
 	signal(SIGALRM, handle_sigalrm);
 	signal(SIGQUIT, handle_sigquit);
@@ -400,6 +430,8 @@ int kvm_cmd_run(int argc, const char **argv, const char *prefix)
 		kernel_usage_with_options();
 		return EINVAL;
 	}
+
+	vmlinux_filename = find_vmlinux();
 
 	if (nrcpus < 1 || nrcpus > KVM_NR_CPUS)
 		die("Number of CPUs %d is out of [1;%d] range", nrcpus, KVM_NR_CPUS);
@@ -434,6 +466,8 @@ int kvm_cmd_run(int argc, const char **argv, const char *prefix)
 
 	if (!script)
 		script = DEFAULT_SCRIPT;
+
+	symbol__init(vmlinux_filename);
 
 	term_init();
 
@@ -481,9 +515,13 @@ int kvm_cmd_run(int argc, const char **argv, const char *prefix)
 	}
 	free(hi);
 
+	printf("  # kvm run -k %s -m %Lu -c %d\n", kernel_filename, ram_size / 1024 / 1024, nrcpus);
+
 	if (!kvm__load_kernel(kvm, kernel_filename, initrd_filename,
 				real_cmdline))
 		die("unable to load kernel %s", kernel_filename);
+
+	kvm->vmlinux		= vmlinux_filename;
 
 	ioport__setup_legacy();
 
@@ -507,7 +545,7 @@ int kvm_cmd_run(int argc, const char **argv, const char *prefix)
 	if (!strncmp(network, "virtio", 6)) {
 		net_params = (struct virtio_net_parameters) {
 			.host_ip = host_ip_addr,
-			.self = kvm,
+			.kvm = kvm,
 			.script = script
 		};
 		sscanf(guest_mac,	"%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
