@@ -53,7 +53,7 @@ OBJS	+= bios/bios.o
 
 LIBS	+= -lrt
 LIBS	+= -lpthread
-LIBS += -lvncserver
+#LIBS += -lvncserver
 LIBS	+= -lbfd
 
 # Additional ARCH settings for x86
@@ -97,6 +97,18 @@ WARNINGS += -Wvolatile-register-var
 WARNINGS += -Wwrite-strings
 
 CFLAGS	+= $(WARNINGS)
+
+-include feature-tests.mak
+# Check if we have libvncserver around
+# As done in tools/perf/Makefile
+FLAGS_VNCSERVER=$(CFLAGS) -lvncserver
+ifneq ($(call try-cc,$(SOURCE_VNC),$(FLAGS_VNCSERVER)),y)
+	msg := $(warning No libvncserver.h found or old libvncserver.h found. Please install libvncserver-devel, your distribution's equivalent, or get the source from the libvncserver website);
+	exit 1;
+else
+	LIBS += -lvncserver
+endif
+
 
 all: $(PROGRAM)
 
