@@ -1,11 +1,6 @@
 #include "kvm/dummy-vesa.h"
-#include "kvm/virtio-pci.h"
-#include "kvm/disk-image.h"
-#include "kvm/virtio.h"
 #include "kvm/ioport.h"
 #include "kvm/util.h"
-#include "kvm/term.h"
-#include "kvm/mutex.h"
 #include "kvm/kvm.h"
 #include "kvm/pci.h"
 #include "kvm/kvm-cpu.h"
@@ -14,15 +9,10 @@
 
 #include <rfb/rfb.h>
 
-#include <sys/uio.h>
 #include <sys/types.h>
-#include <sys/stat.h>
 #include <sys/ioctl.h>
 #include <inttypes.h>
-#include <termios.h>
-#include <assert.h>
 #include <unistd.h>
-#include <fcntl.h>
 
 #define DUMMY_VESA_QUEUE_SIZE 128
 #define DUMMY_VESA_IRQ	14
