@@ -8,6 +8,14 @@
 
 #define MMIO_NODE(n) container_of(n, struct mmio_mapping, node)
 
+static const char *to_direction(u8 is_write)
+{
+	if (is_write)
+		return "write";
+
+	return "read";
+}
+
 struct mmio_mapping {
        u64             start;
        u64             end;
@@ -118,14 +126,6 @@ bool kvm__deregister_mmio(u64 phys_addr)
        return true;
 }
 
-static const char *to_direction(u8 is_write)
-{
-	if (is_write)
-		return "write";
-
-	return "read";
-}
-
  bool kvm__emulate_mmio(struct kvm *kvm, u64 phys_addr, u8 *data, u32 len, u8 is_write)
  {
        struct mmio_mapping *mmio = search(&mmio_tree, phys_addr);
@@ -138,25 +138,3 @@ static const char *to_direction(u8 is_write)
 
        return true;
  }
-
-
-/*
-u8 videomem[2000000];
-
-bool kvm__emulate_mmio(struct kvm *self, u64 phys_addr, u8 *data, u32 len, u8 is_write)
-{
-//	u32 ptr;
-		if (is_write) {
-//			ptr = phys_addr - 0xd0000000;
-//			fprintf(stderr, "phys_addr = %p, videomem = %p, ptr = %x\n", (void*)phys_addr, videomem, ptr);
-			memcpy(&videomem[phys_addr - 0xd0000000], data, len);
-		} else {
-//			ptr = guest_flat_to_host(pd & TARGET_PAGE_MASK) +
-//				(addr & ~TARGET_PAGE_MASK);
-			//ptr = guest_flat_to_host(self, phys_addr);
-//			memcpy(data, ptr, len);
-		}
-
-	return true;
-}
-*/
