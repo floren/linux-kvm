@@ -17,7 +17,7 @@
 #define DUMMY_VESA_QUEUE_SIZE 128
 #define DUMMY_VESA_IRQ	14
 
-char videomem[VESA_MEM_SIZE];
+u8 videomem[VESA_MEM_SIZE];
 
 struct vesa_device {
 	pthread_mutex_t			mutex;
@@ -53,9 +53,15 @@ static struct pci_device_header dummy_vesa_pci_device = {
 	.subsys_id		= PCI_SUBSYSTEM_ID_DUMMY_VESA,
 	.bar[0]			= IOPORT_DUMMY_VESA | PCI_BASE_ADDRESS_SPACE_IO,
 	.bar[1]			= VESA_MEM_ADDR,
-//	.irq_pin		= 4,
-//	.irq_line		= DUMMY_VESA_IRQ,
 };
+
+
+void vesa_mmio_callback(u64 addr, u8 *data, u32 len, u8 is_write) {
+	if (is_write) {
+		memcpy(&videomem[addr - VESA_MEM_ADDR], data, len);
+	}
+	return;
+}
 
 #define PCI_DUMMY_VESA_DEVNUM 4
 void dummy_vesa__init(struct kvm *self)
@@ -76,6 +82,7 @@ void dummy_vesa__init(struct kvm *self)
 	zone.addr = VESA_MEM_ADDR;
 	zone.size = VESA_MEM_SIZE;
 	ret = ioctl(self->vm_fd, KVM_REGISTER_COALESCED_MMIO, &zone);
+	kvm__register_mmio(VESA_MEM_ADDR, VESA_MEM_SIZE, &vesa_mmio_callback);
 }
 
 /*

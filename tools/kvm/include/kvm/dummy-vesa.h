@@ -1,3 +1,5 @@
+#include <linux/types.h>
+
 #ifndef KVM__DUMMY_VESA_H
 #define KVM__DUMMY_VESA_H
 
@@ -10,9 +12,10 @@
 
 struct kvm;
 
+void vesa_mmio_callback(u64, u8*, u32, u8);
 void dummy_vesa__init(struct kvm *self);
 
 // Here's my framebuffer stuff
-extern char videomem[VESA_MEM_SIZE];
+extern u8 videomem[VESA_MEM_SIZE];
 extern void* dovnc(void*);
 #endif //KVM__DUMMY_VESA_H
