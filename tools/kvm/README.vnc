@@ -5,6 +5,7 @@ mouse. You'll need the libvncserver library in order to build.
 To use it, build a kernel including the following options:
 	CONFIG_FB_BOOT_VESA_SUPPORT=y
 	CONFIG_FB_VESA=y
+	CONFIG_FRAMEBUFFER_CONSOLE=y
 
 You'll need to set the video mode directly into the kernel binary
 using rdev. The appropriate mode is 786, so do something like this:

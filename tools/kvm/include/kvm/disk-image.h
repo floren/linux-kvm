@@ -4,6 +4,7 @@
 #include <linux/types.h>
 #include <stdbool.h>
 #include <sys/uio.h>
+#include <unistd.h>
 
 #define SECTOR_SHIFT		9
 #define SECTOR_SIZE		(1UL << SECTOR_SHIFT)
@@ -15,6 +16,7 @@ struct disk_image_operations {
 	int (*write_sector)(struct disk_image *disk, u64 sector, void *src, u32 src_len);
 	ssize_t (*read_sector_iov)(struct disk_image *disk, u64 sector, const struct iovec *iov, int iovcount);
 	ssize_t (*write_sector_iov)(struct disk_image *disk, u64 sector, const struct iovec *iov, int iovcount);
+	int (*flush)(struct disk_image *disk);
 	void (*close)(struct disk_image *disk);
 };
 
@@ -40,36 +42,14 @@ static inline int disk_image__write_sector(struct disk_image *disk, u64 sector, 
 	return disk->ops->write_sector(disk, sector, src, src_len);
 }
 
-static inline ssize_t disk_image__read_sector_iov(struct disk_image *disk, u64 sector, const struct iovec *iov, int iovcount)
+ssize_t disk_image__read_sector_iov(struct disk_image *disk, u64 sector, const struct iovec *iov, int iovcount);
+ssize_t disk_image__write_sector_iov(struct disk_image *disk, u64 sector, const struct iovec *iov, int iovcount);
+
+static inline int disk_image__flush(struct disk_image *disk)
 {
-	if (disk->ops->read_sector_iov)
-		return disk->ops->read_sector_iov(disk, sector, iov, iovcount);
-
-	while (iovcount--) {
-		if (disk->ops->read_sector(disk, sector, iov->iov_base, iov->iov_len) < 0)
-			return -1;
-
-		sector += iov->iov_len >> SECTOR_SHIFT;
-		iov++;
-	}
-
-	return sector << SECTOR_SHIFT;
-}
-
-static inline ssize_t disk_image__write_sector_iov(struct disk_image *disk, u64 sector, const struct iovec *iov, int iovcount)
-{
-	if (disk->ops->write_sector_iov)
-		return disk->ops->write_sector_iov(disk, sector, iov, iovcount);
-
-	while (iovcount--) {
-		if (disk->ops->write_sector(disk, sector, iov->iov_base, iov->iov_len) < 0)
-			return -1;
-
-		sector += iov->iov_len >> SECTOR_SHIFT;
-		iov++;
-	}
-
-	return sector << SECTOR_SHIFT;
+	if (disk->ops->flush)
+		return disk->ops->flush(disk);
+	return fsync(disk->fd);
 }
 
 #endif /* KVM__DISK_IMAGE_H */
