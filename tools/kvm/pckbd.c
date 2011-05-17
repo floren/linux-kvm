@@ -9,13 +9,6 @@
 #include <rfb/rfb.h>
 #include <stdint.h>
 
-#define CMD_READ_MODE	0x20
-#define CMD_WRITE_MODE	0x60
-
-#define RESPONSE_ACK		0xFA
-
-#define QUEUE_SIZE			128
-
 typedef struct KBDstate {
 	char 	q[QUEUE_SIZE]; // keyboard queue
 	int 	read, write; // indexes into the queue
@@ -100,7 +93,7 @@ void kbd_write_data(u32 addr, u32 val)
 {
 	switch (state.write_cmd) {
 		case CMD_WRITE_MODE:
-			/* I have no idea why this works but it does... wtf? */
+			/* I don't think this is supposed to work this way, but it does. */
 			kbd_queue(RESPONSE_ACK);
 			kbd_queue(0xab);
 			kbd_queue(0x41);

@@ -7,3 +7,10 @@ extern void kbd_write_data(u32, u32);
 extern void dokey(rfbBool, rfbKeySym, rfbClientPtr);
 extern void kbd_init(struct kvm *kvm);
 
+#define CMD_READ_MODE	0x20
+#define CMD_WRITE_MODE	0x60
+
+#define RESPONSE_ACK		0xFA
+
+#define QUEUE_SIZE			128
+
