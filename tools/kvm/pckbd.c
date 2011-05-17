@@ -1,34 +1,3 @@
-/*
- * PS/2 keyboard for KVM. The majority of the logic in here comes straight
- * from QEMU; I condensed the keyboard parts of pckbd.c and ps2.c into this
- * single file to provide just one PS/2 keyboard.
- * Since it comes largely from QEMU, I have left the original header below.
- * John Floren (2011)
- */
-
-/*
- * QEMU PC keyboard emulation
- *
- * Copyright (c) 2003 Fabrice Bellard
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
- * THE SOFTWARE.
- */
 #include "kvm/read-write.h"
 #include "kvm/ioport.h"
 #include "kvm/mutex.h"
@@ -40,359 +9,116 @@
 #include <rfb/rfb.h>
 #include <stdint.h>
 
-void kbd_update_kbd_irq(struct kvm*, int);
-void kbd_queue(struct kvm *, int);
-void ps2_write_keyboard(struct kvm *self, int val);
-void ps2_keyboard_set_translation(int mode);
+#define CMD_READ_MODE	0x20
+#define CMD_WRITE_MODE	0x60
 
-typedef struct {
-	int32_t write_cmd; /* if non zero, write data to port 60 is expected */
-	uint8_t status;
-	uint8_t mode;
-	uint8_t outport;
-	/* Bitmask of devices with data available.  */
-	uint8_t pending;
-	void *kbd;
-	void *mouse;
+#define RESPONSE_ACK		0xFA
 
-	int translate;
-	int scan_enabled;
-	int scancode_set;
-	uint32_t mask;
-} KBDState;
+#define QUEUE_SIZE			128
 
-KBDState state = { .mode = 0x14, };
+typedef struct KBDstate {
+	char 	q[QUEUE_SIZE]; // keyboard queue
+	int 	read, write; // indexes into the queue
+	int 	count; // number of elements in queue
 
-#define PS2_QUEUE_SIZE 128
+	u8 	mode;
+	u8 	status;
+	u32 	write_cmd;
+} KBDstate;
 
-typedef struct {
-	int	count;
-	char	data[PS2_QUEUE_SIZE];
-	int rptr, wptr;
-} PS2Queue;
+static KBDstate state;
 
-PS2Queue kbdqueue;
+static struct kvm *self;
 
-
-/* update irq and KBD_STAT_[MOUSE_]OBF */
-/* XXX: not generating the irqs if KBD_MODE_DISABLE_KBD is set may be
-   incorrect, but it avoids having to simulate exact delays */
-static void kbd_update_irq(struct kvm *self)
+static void kbd_update_irq(void)
 {
-	KBDState *s = &state;
-	int irq_kbd_level;
-
-	irq_kbd_level = 0;
-	s->status &= ~(KBD_STAT_OBF);
-	s->outport &= ~(KBD_OUT_OBF);
-	if (s->pending) {
-		s->status |= KBD_STAT_OBF;
-		s->outport |= KBD_OUT_OBF;
-		/* kbd data takes priority over aux data.  */
-			if ((s->mode & KBD_MODE_KBD_INT) &&
-				!(s->mode & KBD_MODE_DISABLE_KBD))
-				irq_kbd_level = 1;
-	}
-	kvm__irq_line(self, 1, irq_kbd_level);
-}
-
-void kbd_update_kbd_irq(struct kvm *self, int level)
-{
-	KBDState *s = &state;
-
-	if (level)
-		s->pending |= KBD_PENDING_KBD;
-	else
-		s->pending &= ~KBD_PENDING_KBD;
-	kbd_update_irq(self);
-}
-
-void kbd_queue(struct kvm *self, int b)
-{
-	if (kbdqueue.count >= PS2_QUEUE_SIZE)
-		return;
-	kbdqueue.data[kbdqueue.wptr] = b;
-	if (++kbdqueue.wptr == PS2_QUEUE_SIZE)
-		kbdqueue.wptr = 0;
-	kbdqueue.count++;
-	// update_irqs?
-	kbd_update_kbd_irq(self, 1);
-}
-
-uint32_t kbd_read_data(struct kvm *self)
-{
-	PS2Queue *q = &kbdqueue;
-	int val, index;
-
-	if (q->count == 0) {
-		/* NOTE: if no data left, we return the last keyboard one
-		   (needed for EMM386) */
-		/* XXX: need a timer to do things correctly */
-		index = q->rptr - 1;
-		if (index < 0)
-			index = PS2_QUEUE_SIZE - 1;
-		val = q->data[index];
+	u8 level;
+	if (!state.count) {
+		state.status &= 0xfe; // unset output buffer full bit
+		level = 0;
 	} else {
-		val = q->data[q->rptr];
-		if (++q->rptr == PS2_QUEUE_SIZE)
-			q->rptr = 0;
-		q->count--;
-		/* reading deasserts IRQ */
-		kbd_update_kbd_irq(self, 0);
-		/* reassert IRQs if data left */
-		kbd_update_kbd_irq(self, q->count != 0);
+		state.status |= 0x01;
+		level = 1;
 	}
-	return val;
+	kvm__irq_line(self, 1, level);
+}
+
+static void kbd_queue(u8 c)
+{
+	if (state.count >= QUEUE_SIZE)
+		return;
+
+	state.q[state.write++] = c;
+	if (state.write == QUEUE_SIZE)
+		state.write = 0;
+
+	state.count++;
+	kbd_update_irq();
+}
+
+void kbd_write_command(u32 addr, u32 val)
+{
+	switch (val) {
+		case CMD_READ_MODE:
+			kbd_queue(state.mode);
+			break;
+		case CMD_WRITE_MODE:
+			state.write_cmd = val;
+			break;
+		default:
+			break;
+	}
+}
+
+u32 kbd_read_data(void)
+{
+	u32 ret;
+	int i;
+
+	if (state.count == 0) {
+		i = state.read - 1;
+		if (i < 0)
+			i = QUEUE_SIZE;
+		ret = state.q[i];
+	} else {
+		ret = state.q[state.read++];
+		if (state.read == QUEUE_SIZE)
+			state.read = 0;
+		state.count--;
+		kvm__irq_line(self, 1, 0);
+		kbd_update_irq();
+	}
+	return ret;
 }
 
 u32 kbd_read_status(void)
 {
-	KBDState *s = &state;
-	int val;
-	val = s->status;
-	return val;
+	return (u32)state.status;
 }
 
-	
-void kbd_write_command(struct kvm *self, uint32_t addr, uint32_t val)
+void kbd_write_data(u32 addr, u32 val)
 {
-	KBDState *s = &state;
-
-	/* Bits 3-0 of the output port P2 of the keyboard controller may be pulsed
-	 * low for approximately 6 micro seconds. Bits 3-0 of the KBD_CCMD_PULSE
-	 * command specify the output port bits to be pulsed.
-	 * 0: Bit should be pulsed. 1: Bit should not be modified.
-	 * The only useful version of this command is pulsing bit 0,
-	 * which does a CPU reset.
-	 */
-	if((val & KBD_CCMD_PULSE_BITS_3_0) == KBD_CCMD_PULSE_BITS_3_0) {
-		if(!(val & 1))
-			val = KBD_CCMD_RESET;
-		else
-			val = KBD_CCMD_NO_OP;
-	}
-
-	switch(val) {
-	case KBD_CCMD_READ_MODE:
-		kbd_queue(self, s->mode);
-		break;
-	case KBD_CCMD_WRITE_MODE:
-	case KBD_CCMD_WRITE_OBUF:
-	case KBD_CCMD_WRITE_AUX_OBUF:
-	case KBD_CCMD_WRITE_MOUSE:
-	case KBD_CCMD_WRITE_OUTPORT:
-		s->write_cmd = val;
-		break;
-	case KBD_CCMD_MOUSE_DISABLE:
-		s->mode |= KBD_MODE_DISABLE_MOUSE;
-		break;
-	case KBD_CCMD_MOUSE_ENABLE:
-		s->mode &= ~KBD_MODE_DISABLE_MOUSE;
-		break;
-	case KBD_CCMD_TEST_MOUSE:
-		kbd_queue(self, 0x00);
-		break;
-	case KBD_CCMD_SELF_TEST:
-		s->status |= KBD_STAT_SELFTEST;
-		kbd_queue(self, 0x55);
-		break;
-	case KBD_CCMD_KBD_TEST:
-		kbd_queue(self, 0x00);
-		break;
-	case KBD_CCMD_KBD_DISABLE:
-		s->mode |= KBD_MODE_DISABLE_KBD;
-		kbd_update_irq(self);
-		break;
-	case KBD_CCMD_KBD_ENABLE:
-		s->mode &= ~KBD_MODE_DISABLE_KBD;
-		kbd_update_irq(self);
-		break;
-	case KBD_CCMD_READ_INPORT:
-		kbd_queue(self, 0x00);
-		break;
-	case KBD_CCMD_READ_OUTPORT:
-		kbd_queue(self, s->outport);
-		break;
-	case KBD_CCMD_ENABLE_A20:
-//		if (s->a20_out) {
-//			qemu_irq_raise(*s->a20_out);
-//		}
-		s->outport |= KBD_OUT_A20;
-		break;
-	case KBD_CCMD_DISABLE_A20:
-//		if (s->a20_out) {
-//			qemu_irq_lower(*s->a20_out);
-//		}
-		s->outport &= ~KBD_OUT_A20;
-		break;
-	case KBD_CCMD_RESET:
-//		qemu_system_reset_request();
-		break;
-	case KBD_CCMD_NO_OP:
-		/* ignore that */
-		break;
-	default:
-		fprintf(stderr, "unsupported keyboard cmd=0x%02x\n", val);
-		break;
-	}
-}
-
-/*
-   keycode is expressed as follow:
-   bit 7	- 0 key pressed, 1 = key released
-   bits 6-0 - translated scancode set 2
- */
-static void ps2_put_keycode(struct kvm *self, int keycode)
-{
-	KBDState *s = &state;
-
-	/* XXX: add support for scancode set 1 */
-	if (!s->translate && keycode < 0xe0 && s->scancode_set > 1) {
-		if (keycode & 0x80) {
-			kbd_queue(self, 0xf0);
-		}
-		if (s->scancode_set == 2) {
-			keycode = ps2_raw_keycode[keycode & 0x7f];
-		} else if (s->scancode_set == 3) {
-			keycode = ps2_raw_keycode_set3[keycode & 0x7f];
-		}
-	  }
-	kbd_queue(self, keycode);
-}
-
-void ps2_write_keyboard(struct kvm *self, int val)
-{
-	KBDState *s = &state;
-	switch(state.write_cmd) {
-	default:
-	case -1:
-		switch(val) {
-		case 0x00:
-			kbd_queue(self, KBD_REPLY_ACK);
-			break;
-		case 0x05:
-			kbd_queue(self, KBD_REPLY_RESEND);
-			break;
-		case KBD_CMD_GET_ID:
-			kbd_queue(self, KBD_REPLY_ACK);
-			/* We emulate a MF2 AT keyboard here */
-			kbd_queue(self, KBD_REPLY_ID);
-			if (s->translate)
-				kbd_queue(self, 0x41);
-			else
-				kbd_queue(self, 0x83);
-			break;
-		case KBD_CMD_ECHO:
-			kbd_queue(self, KBD_CMD_ECHO);
-			break;
-		case KBD_CMD_ENABLE:
-			s->scan_enabled = 1;
-			kbd_queue(self, KBD_REPLY_ACK);
-			break;
-		case KBD_CMD_SCANCODE:
-		case KBD_CMD_SET_LEDS:
-		case KBD_CMD_SET_RATE:
-			state.write_cmd = val;
-			kbd_queue(self, KBD_REPLY_ACK);
-			break;
-		case KBD_CMD_RESET_DISABLE:
-//			ps2_reset_keyboard(s);
-			s->scan_enabled = 0;
-			kbd_queue(self, KBD_REPLY_ACK);
-			break;
-		case KBD_CMD_RESET_ENABLE:
-//			ps2_reset_keyboard(s);
-			s->scan_enabled = 1;
-			kbd_queue(self, KBD_REPLY_ACK);
-			break;
-		case KBD_CMD_RESET:
-//			ps2_reset_keyboard(s);
-			kbd_queue(self, KBD_REPLY_ACK);
-			kbd_queue(self, KBD_REPLY_POR);
+	switch (state.write_cmd) {
+		case CMD_WRITE_MODE:
+			/* I have no idea why this works but it does... wtf? */
+			kbd_queue(RESPONSE_ACK);
+			kbd_queue(0xab);
+			kbd_queue(0x41);
+			kbd_update_irq();
 			break;
 		default:
-			kbd_queue(self, KBD_REPLY_ACK);
+			/* Yeah whatever */
+			kbd_queue(RESPONSE_ACK);
 			break;
-		}
-		break;
-
-	case KBD_CMD_SCANCODE:
-		if (val == 0) {
-			if (s->scancode_set == 1)
-				ps2_put_keycode(self, 0x43);
-			else if (s->scancode_set == 2)
-				ps2_put_keycode(self, 0x41);
-			else if (s->scancode_set == 3)
-				ps2_put_keycode(self, 0x3f);
-		} else {
-			if (val >= 1 && val <= 3)
-				s->scancode_set = val;
-			kbd_queue(self, KBD_REPLY_ACK);
-		}
-		state.write_cmd = -1;
-		break;
-
-	case KBD_CMD_SET_LEDS:
-//		kbd_put_ledstate(val);
-		kbd_queue(self, KBD_REPLY_ACK);
-		state.write_cmd = -1;
-		break;
-	case KBD_CMD_SET_RATE:
-		kbd_queue(self, KBD_REPLY_ACK);
-		state.write_cmd = -1;
-		break;
 	}
 }
 
-void ps2_keyboard_set_translation(int mode)
+static void kbd_reset(void)
 {
-	state.translate = mode;
+	state.status = 0x18;
+	state.mode = 0x01;
+	state.read = state.write = state.count = 0;
 }
-
-void kbd_write_data(struct kvm *self, uint32_t addr, uint32_t val)
-{
-	KBDState *s = &state;
-
-	switch(s->write_cmd) {
-	case 0:
-		ps2_write_keyboard(self, val);
-		break;
-	case KBD_CCMD_WRITE_MODE:
-		s->mode = val;
-		ps2_keyboard_set_translation((s->mode & KBD_MODE_KCC) != 0);
-		/* ??? */
-		kbd_update_irq(self);
-		break;
-	case KBD_CCMD_WRITE_OBUF:
-		kbd_queue(self, val);
-		break;
-	case KBD_CCMD_WRITE_AUX_OBUF:
-		kbd_queue(self, val);
-		break;
-	case KBD_CCMD_WRITE_OUTPORT:
-//		outport_write(self, val);
-		break;
-/*
-	case KBD_CCMD_WRITE_MOUSE:
-		ps2_write_mouse(s->mouse, val);
-		break;
-*/
-	default:
-		break;
-	}
-	s->write_cmd = 0;
-}
-
-void kbd_reset(void)
-{
-	KBDState *s = &state;
-
-	s->mode = KBD_MODE_KBD_INT | KBD_MODE_MOUSE_INT;
-	s->status = KBD_STAT_CMD | KBD_STAT_UNLOCKED;
-	s->outport = KBD_OUT_RESET | KBD_OUT_A20;
-}
-
-static struct kvm *self;	
 
 static char letters[26] = {
 	0x1c, 0x32, 0x21, 0x23, 0x24, /* a-e */
@@ -437,38 +163,38 @@ void dokey(rfbBool down, rfbKeySym key, rfbClientPtr cl)
 			tosend = 0x76;
 			break;
 		case XK_Insert:
-			kbd_queue(self, 0xe0);
+			kbd_queue(0xe0);
 			tosend = 0x70;
 		case XK_Delete:
-			kbd_queue(self, 0xe0);
+			kbd_queue(0xe0);
 			tosend = 0x71;
 			break;
 		case XK_Up:
-			kbd_queue(self, 0xe0);
+			kbd_queue(0xe0);
 			tosend = 0x75;
 			break;
 		case XK_Down:
-			kbd_queue(self, 0xe0);
+			kbd_queue(0xe0);
 			tosend = 0x72;
 			break;
 		case XK_Left:
-			kbd_queue(self, 0xe0);
+			kbd_queue(0xe0);
 			tosend = 0x6b;
 			break;
 		case XK_Right:
-			kbd_queue(self, 0xe0);
+			kbd_queue(0xe0);
 			tosend = 0x74;
 			break;
 		case XK_Page_Up:
-			kbd_queue(self, 0xe0);
+			kbd_queue(0xe0);
 			tosend = 0x7d;
 			break;
 		case XK_Page_Down:
-			kbd_queue(self, 0xe0);
+			kbd_queue(0xe0);
 			tosend = 0x7a;
 			break;
 		case XK_Home:
-			kbd_queue(self, 0xe0);
+			kbd_queue(0xe0);
 			tosend = 0x6c;
 			break;
 		case XK_End:
@@ -481,12 +207,12 @@ void dokey(rfbBool down, rfbKeySym key, rfbClientPtr cl)
 			tosend = 0x59;
 			break;
 		case XK_Control_R:
-			kbd_queue(self, 0xe0);
+			kbd_queue(0xe0);
 		case XK_Control_L:
 			tosend = 0x14;
 			break;
 		case XK_Alt_R:
-			kbd_queue(self, 0xe0);
+			kbd_queue(0xe0);
 		case XK_Alt_L:
 			tosend = 0x11;
 			break;
@@ -599,10 +325,10 @@ void dokey(rfbBool down, rfbKeySym key, rfbClientPtr cl)
 	}
 
 	if (!down && tosend != 0x0)
-		kbd_queue(self, 0xf0);
+		kbd_queue(0xf0);
 
 	if (tosend)
-		kbd_queue(self, tosend);
+		kbd_queue(tosend);
 }
 
 static bool kbd_in(struct kvm *self, uint16_t port, void *data, int size, uint32_t count)
@@ -612,7 +338,7 @@ static bool kbd_in(struct kvm *self, uint16_t port, void *data, int size, uint32
 		result = kbd_read_status();
 		ioport__write8(data, (char)result);
 	} else {
-		result = kbd_read_data(self);
+		result = kbd_read_data();
 		ioport__write32(data, result);
 	}
 	return true;
@@ -621,9 +347,9 @@ static bool kbd_in(struct kvm *self, uint16_t port, void *data, int size, uint32
 static bool kbd_out(struct kvm *self, u16 port, void *data, int size, u32 count)
 {
 	if (port == 0x64) {
-		kbd_write_command(self, (u32)data, *((u32*)data));
+		kbd_write_command((u32)data, *((u32*)data));
 	} else {
-		kbd_write_data(self, (u32)data, *((u32*)data));
+		kbd_write_data((u32)data, *((u32*)data));
 	}
 	return true;
 }
