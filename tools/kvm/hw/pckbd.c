@@ -9,46 +9,55 @@
 #include <rfb/rfb.h>
 #include <stdint.h>
 
+/*
+ * This represents the current state of the PS/2 keyboard system,
+ * including the AUX device (the mouse)
+ */
 typedef struct KBDstate {
 	char 	kq[QUEUE_SIZE]; // keyboard queue
 	int 	kread, kwrite; // indexes into the queue
 	int 	kcount; // number of elements in queue
 
-	char mq[QUEUE_SIZE];
+	char 	mq[QUEUE_SIZE];
 	int	mread, mwrite;
 	int	mcount;
 
-	u8	mstatus;
-	u8	mres;
-	u8	msample;
+	u8	mstatus; // mouse status byte
+	u8	mres; // current mouse resolution
+	u8	msample; // current mouse samples/second
 
-	u8 	mode;
-	u8 	status;
-	u32 	write_cmd;
+	u8 	mode; // i8042 mode register
+	u8 	status; // i8042 status register
+	// Some commands (on port 0x64) have arguments; 
+	// we store the command here while we wait for the argument
+	u32 	write_cmd; 
 } KBDstate;
 
 static KBDstate state;
 
 static struct kvm *self;
 
+/*
+ * If there are packets to be read, set the appropriate IRQs high
+ */
 static void kbd_update_irq(void)
 {
-	u8 klevel, mlevel = 0;
+	u8 klevel = 0;
+	u8 mlevel = 0;
 
-	state.status &= ~KBD_OBF;
-	state.status &= ~AUX_OBF;
+	/* First, clear the kbd and aux output buffer full bits */
+	state.status &= ~KBD_STATUS_OBF;
+	state.status &= ~KBD_STATUS_AUX_OBF;
 
-	if (state.kcount == 0) {
-		state.status &= ~KBD_OBF; // unset output buffer full bit
-		klevel = 0;
-	} else {
-		state.status |= KBD_OBF;
+	if (state.kcount > 0) {
+		state.status |= KBD_STATUS_OBF;
 		klevel = 1;
 	}
 
+	/* Keyboard has higher priority than mouse */
 	if (klevel == 0 && state.mcount != 0) {
-		state.status |= KBD_OBF;
-		state.status |= AUX_OBF;
+		state.status |= KBD_STATUS_OBF; // you have to set both OBF and AUX OBF
+		state.status |= KBD_STATUS_AUX_OBF;
 		mlevel = 1;
 	}
 
@@ -56,6 +65,9 @@ static void kbd_update_irq(void)
 	kvm__irq_line(self, AUX_IRQ, mlevel);
 }
 
+/*
+ * Add a byte to the mouse queue, then set IRQs
+ */
 static void mouse_queue(u8 c)
 {
 	if (state.mcount >= QUEUE_SIZE)
@@ -69,6 +81,9 @@ static void mouse_queue(u8 c)
 	kbd_update_irq();
 }
 
+/*
+ * Add a byte to the keyboard queue, then set IRQs
+ */
 static void kbd_queue(u8 c)
 {
 	if (state.kcount >= QUEUE_SIZE)
@@ -82,7 +97,10 @@ static void kbd_queue(u8 c)
 	kbd_update_irq();
 }
 
-void kbd_write_command(u32 addr, u32 val)
+/*
+ * This function is called when the OS issues a write to port 0x64
+ */
+void kbd_write_command(u32 val)
 {
 	switch (val) {
 		case CMD_READ_MODE:
@@ -108,12 +126,16 @@ void kbd_write_command(u32 addr, u32 val)
 	}
 }
 
+/*
+ * Called when the OS reads from port 0x60 (PS/2 data)
+ */
 u32 kbd_read_data(void)
 {
 	u32 ret;
 	int i;
 
 	if (state.kcount != 0) {
+		/* Keyboard data gets read first */
 		ret = state.kq[state.kread++];
 		if (state.kread == QUEUE_SIZE)
 			state.kread = 0;
@@ -121,6 +143,7 @@ u32 kbd_read_data(void)
 		kvm__irq_line(self, KBD_IRQ, 0);
 		kbd_update_irq();
 	} else if (state.mcount > 0) {
+		/* Followed by the mouse */
 		ret = state.mq[state.mread++];
 		if (state.mread == QUEUE_SIZE)
 			state.mread = 0;
@@ -128,6 +151,9 @@ u32 kbd_read_data(void)
 		kvm__irq_line(self, AUX_IRQ, 0);
 		kbd_update_irq();
 	} else if (state.kcount == 0) {
+		/* Otherwise, we take QEMU's lead and
+		 * return the most recent byte
+		 */
 		i = state.kread - 1;
 		if (i < 0)
 			i = QUEUE_SIZE;
@@ -136,12 +162,20 @@ u32 kbd_read_data(void)
 	return ret;
 }
 
+/*
+ * Called when the OS read from port 0x64, the command port
+ */
 u32 kbd_read_status(void)
 {
 	return (u32)state.status;
 }
 
-void kbd_write_data(u32 addr, u32 val)
+/*
+ * Called when the OS writes to port 0x60 (data port)
+ * Things written here are generally arguments to commands previously
+ * written to port 0x64 and stored in state.write_cmd
+ */
+void kbd_write_data(u32 val)
 {
 	switch (state.write_cmd) {
 		case CMD_WRITE_MODE:
@@ -153,6 +187,7 @@ void kbd_write_data(u32 addr, u32 val)
 			mouse_queue(RESPONSE_ACK);
 			break;
 		case CMD_WRITE_AUX:
+			// The OS wants to send a command to the mouse
 			mouse_queue(RESPONSE_ACK);
 			switch (val) {
 				case 0xe6:
@@ -161,29 +196,31 @@ void kbd_write_data(u32 addr, u32 val)
 					break;
 				case 0xe8:
 					// set resolution
+					state.mres = val;
 					break;
 				case 0xe9:
+					// Report mouse status/config
 					mouse_queue(state.mstatus);
 					mouse_queue(state.mres);
 					mouse_queue(state.msample);
 					break;
 				case 0xf2:
 					// send ID
-					mouse_queue(0x00);
+					mouse_queue(0x00); // normal mouse
 					break;
 				case 0xf3:
 					// set sample rate
 					state.msample = val;
 					break;
 				case 0xf4:
+					// enable reporting
 					state.mstatus |= AUX_ENABLE_REPORTING;
 					break;
 				case 0xf5:
 					state.mstatus &= ~AUX_ENABLE_REPORTING;
 					break;
 				case 0xf6:
-					// set defaults
-					break;
+					// set defaults, just fall through to reset
 				case 0xff:
 					// reset
 					state.mstatus = 0x0;
@@ -210,13 +247,13 @@ void kbd_write_data(u32 addr, u32 val)
 
 static void kbd_reset(void)
 {
-	state.status = KBD_STATUS_SYS | KBD_STATUS_A2 | KBD_STATUS_INH; // 0x1c
-	state.mode = KBD_MODE_KBD_INT | KBD_MODE_SYS; // 0x3
-	state.kread = state.kwrite = state.kcount = 0;
-	state.mread = state.mwrite = state.mcount = 0;
-	state.mstatus = 0x0;
-	state.mres = AUX_DEFAULT_RESOLUTION;
-	state.msample = AUX_DEFAULT_SAMPLE;
+	state.status 	= KBD_STATUS_SYS | KBD_STATUS_A2 | KBD_STATUS_INH; // 0x1c
+	state.mode 	= KBD_MODE_KBD_INT | KBD_MODE_SYS; // 0x3
+	state.kread 	= state.kwrite = state.kcount = 0;
+	state.mread 	= state.mwrite = state.mcount = 0;
+	state.mstatus 	= 0x0;
+	state.mres 	= AUX_DEFAULT_RESOLUTION;
+	state.msample 	= AUX_DEFAULT_SAMPLE;
 }
 
 static char letters[26] = {
@@ -232,6 +269,13 @@ static char num[10] = {
 	0x45, 0x16, 0x1e, 0x26, 0x2e, 0x23, 0x36, 0x3d, 0x3e, 0x46,
 };
 
+/*
+ * This is called when the VNC server receives a key event
+ * The reason this function is such a beast is that we have to convert from ASCII
+ * characters (which is what VNC gets) to PC keyboard scancodes, which is what
+ * Linux expects to get from its keyboard. ASCII and the scancode set don't really
+ * seem to mesh in any good way beyond some basics with the letters and numbers
+ */
 void kbd_handle_key(rfbBool down, rfbKeySym key, rfbClientPtr cl)
 {
 	char tosend = 0; // set it to 0 at first
@@ -247,7 +291,8 @@ void kbd_handle_key(rfbBool down, rfbKeySym key, rfbClientPtr cl)
 
 
 	/* I apologize for this, but the ASCII tables and keyboard scan codes
-	 * did not want to play nicely, this seemed the best way to handle things for now */
+	 * did not want to play nicely, this seemed the best way to handle things for now 
+	 */
 	switch (key) {
 		case XK_BackSpace:
 			tosend = 0x66;
@@ -423,6 +468,8 @@ void kbd_handle_key(rfbBool down, rfbKeySym key, rfbClientPtr cl)
 			break;
 	}
 
+	// If this is a "key up" event (the user has released the key, we
+	// need to send 0xf0 first.
 	if (!down && tosend != 0x0)
 		kbd_queue(0xf0);
 
@@ -430,24 +477,32 @@ void kbd_handle_key(rfbBool down, rfbKeySym key, rfbClientPtr cl)
 		kbd_queue(tosend);
 }
 
+// The previous X and Y coordinates of the mouse
 static int xlast, ylast = -1;
 
+/*
+ * This function is called by the VNC server whenever a mouse event occurs.
+ */
 void kbd_handle_ptr(int buttonMask,int x,int y,rfbClientPtr cl)
 {
 	int dx, dy;
 	char b1 = 0x8;
 
-	b1 |= buttonMask;
+	// The VNC mask and the PS/2 button encoding are the same
+	b1 |= buttonMask; 
 
 	if (xlast >= 0 && ylast >= 0) {
+		// The PS/2 mouse sends deltas, not absolutes
 		dx = x - xlast;
 		dy = ylast - y;
 
+		// Set overflow bits if needed
 		if (dy > 255)
 			b1 |= 0x80;
 		if (dx > 255)
 			b1 |= 0x40;
 
+		// Set negative bits if needed
 		if (dy < 0)
 			b1 |= 0x20;
 		if (dx < 0)
@@ -463,7 +518,9 @@ void kbd_handle_ptr(int buttonMask,int x,int y,rfbClientPtr cl)
 	rfbDefaultPtrAddEvent(buttonMask, x, y, cl);
 }
 
-
+/*
+ * Called when the OS has written to one of the keyboard's ports (0x60 or 0x64)
+ */
 static bool kbd_in(struct kvm *self, uint16_t port, void *data, int size, uint32_t count)
 {
 	uint32_t result;
@@ -477,12 +534,15 @@ static bool kbd_in(struct kvm *self, uint16_t port, void *data, int size, uint32
 	return true;
 }
 
+/*
+ * Called when the OS attempts to read from a keyboard port (0x60 or 0x64)
+ */
 static bool kbd_out(struct kvm *self, u16 port, void *data, int size, u32 count)
 {
 	if (port == 0x64) {
-		kbd_write_command((u32)data, *((u32*)data));
+		kbd_write_command(*((u32*)data));
 	} else {
-		kbd_write_data((u32)data, *((u32*)data));
+		kbd_write_data(*((u32*)data));
 	}
 	return true;
 }
@@ -498,6 +558,6 @@ void kbd__init(struct kvm *kvm)
 	ioport__register(0x60, &kbd_ops, 2);
 	ioport__register(0x64, &kbd_ops, 2);
 	kbd_reset();
-	kvm__irq_line(kvm, 1, 0); // kbd = irq 1
-	kvm__irq_line(kvm, 12, 0); // mouse = irq 12
+	kvm__irq_line(kvm, KBD_IRQ, 0); // kbd = irq 1
+	kvm__irq_line(kvm, AUX_IRQ, 0); // mouse = irq 12
 }
