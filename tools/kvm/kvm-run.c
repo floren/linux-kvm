@@ -519,8 +519,7 @@ int kvm_cmd_run(int argc, const char **argv, const char *prefix)
 	memset(real_cmdline, 0, sizeof(real_cmdline));
 	strcpy(real_cmdline, "notsc noapic noacpi pci=conf1");
 	if (vnc) {
-		//strcat(real_cmdline, " video=vesafb console=tty0");
-		strcat(real_cmdline, " video=vesafb console=ttyS0");
+		strcat(real_cmdline, " video=vesafb console=tty0");
 		vidmode = 0x312;
 	} else {
 		strcat(real_cmdline, " console=ttyS0 earlyprintk=serial");
@@ -611,7 +610,7 @@ int kvm_cmd_run(int argc, const char **argv, const char *prefix)
 	kvm__init_ram(kvm);
 
 	if (vnc) {
-		kbd_init(kvm);
+		kbd__init(kvm);
 		vesa__init(kvm);
 	}
 

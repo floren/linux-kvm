@@ -35,25 +35,25 @@ static void kbd_update_irq(void)
 {
 	u8 klevel, mlevel = 0;
 
-	state.status &= ~0x01;
-	state.status &= ~0x20;
+	state.status &= ~KBD_OBF;
+	state.status &= ~MOUSE_OBF;
 
 	if (state.kcount == 0) {
-		state.status &= 0xfe; // unset output buffer full bit
+		state.status &= ~KBD_OBF; // unset output buffer full bit
 		klevel = 0;
 	} else {
-		state.status |= 0x01;
+		state.status |= KBD_OBF;
 		klevel = 1;
 	}
 
 	if (klevel == 0 && state.mcount != 0) {
-		state.status |= 0x01;
-		state.status |= 0x20;
+		state.status |= KBD_OBF;
+		state.status |= MOUSE_OBF;
 		mlevel = 1;
 	}
 
-	kvm__irq_line(self, 1, klevel);
-	kvm__irq_line(self, 12, mlevel);
+	kvm__irq_line(self, KBD_IRQ, klevel);
+	kvm__irq_line(self, MOUSE_IRQ, mlevel);
 }
 
 static void mouse_queue(u8 c)
@@ -84,7 +84,6 @@ static void kbd_queue(u8 c)
 
 void kbd_write_command(u32 addr, u32 val)
 {
-	//printf("write command = 0x%x\n", val);
 	switch (val) {
 		case CMD_READ_MODE:
 			kbd_queue(state.mode);
@@ -95,16 +94,14 @@ void kbd_write_command(u32 addr, u32 val)
 			state.write_cmd = val;
 			break;
 		case CMD_TEST_MOUSE:
-			// queue 0x0 to mouse buf
+			// 0x0 means we're a normal PS/2 mouse
 			mouse_queue(0x0);
 			break;
 		case CMD_DISABLE_MOUSE:
-			state.mode |= 0x20;
-			//mouse_queue(RESPONSE_ACK);
+			state.mode |= MODE_DISABLE_MOUSE;
 			break;
 		case CMD_ENABLE_MOUSE:
-			state.mode &= 0xDF;
-			//mouse_queue(RESPONSE_ACK);
+			state.mode &= ~MODE_DISABLE_MOUSE;
 			break;
 		default:
 			break;
@@ -121,16 +118,15 @@ u32 kbd_read_data(void)
 		if (state.kread == QUEUE_SIZE)
 			state.kread = 0;
 		state.kcount--;
-		kvm__irq_line(self, 1, 0);
+		kvm__irq_line(self, KBD_IRQ, 0);
 		kbd_update_irq();
 	} else if (state.mcount > 0) {
 		ret = state.mq[state.mread++];
 		if (state.mread == QUEUE_SIZE)
 			state.mread = 0;
 		state.mcount--;
-		kvm__irq_line(self, 12, 0);
+		kvm__irq_line(self, MOUSE_IRQ, 0);
 		kbd_update_irq();
-		//printf("reading mouse data 0x%x\n", ret);
 	} else if (state.kcount == 0) {
 		i = state.kread - 1;
 		if (i < 0)
@@ -147,23 +143,14 @@ u32 kbd_read_status(void)
 
 void kbd_write_data(u32 addr, u32 val)
 {
-	//printf("write data = 0x%x\n", val);
 	switch (state.write_cmd) {
 		case CMD_WRITE_MODE:
 			state.mode = val;
 			kbd_update_irq();
 			break;
 		case CMD_WRITE_AUX_BUF:
-			// put val into the mouse queue
 			mouse_queue(val);
 			mouse_queue(RESPONSE_ACK);
-			break;
-		case 0:
-			/* I don't think this is supposed to work this way, but it does. */
-			kbd_queue(RESPONSE_ACK);
-			kbd_queue(0xab);
-			kbd_queue(0x41);
-			kbd_update_irq();
 			break;
 		case CMD_WRITE_MOUSE:
 			mouse_queue(RESPONSE_ACK);
@@ -189,10 +176,10 @@ void kbd_write_data(u32 addr, u32 val)
 					state.msample = val;
 					break;
 				case 0xf4:
-					state.mstatus |= 0x20;
+					state.mstatus |= MOUSE_ENABLE_REPORTING;
 					break;
 				case 0xf5:
-					state.mstatus &= ~0x20;
+					state.mstatus &= ~MOUSE_ENABLE_REPORTING;
 					break;
 				case 0xf6:
 					// set defaults
@@ -207,9 +194,14 @@ void kbd_write_data(u32 addr, u32 val)
 					break;
 			}
 			break;
+		case 0:
+			kbd_queue(RESPONSE_ACK);
+			kbd_queue(0xab);
+			kbd_queue(0x41);
+			kbd_update_irq();
+			break;
 		default:
 			/* Yeah whatever */
-			//kbd_queue(RESPONSE_ACK);
 			break;
 	}
 	state.write_cmd = 0;
@@ -239,7 +231,7 @@ static char num[10] = {
 	0x45, 0x16, 0x1e, 0x26, 0x2e, 0x23, 0x36, 0x3d, 0x3e, 0x46,
 };
 
-void dokey(rfbBool down, rfbKeySym key, rfbClientPtr cl)
+void kbd_handle_key(rfbBool down, rfbKeySym key, rfbClientPtr cl)
 {
 	char tosend = 0; // set it to 0 at first
 
@@ -465,7 +457,7 @@ static struct ioport_operations kbd_ops = {
 	.io_out		= kbd_out,
 };
 
-void kbd_init(struct kvm *kvm)
+void kbd__init(struct kvm *kvm)
 {
 	self = kvm;
 	ioport__register(0x60, &kbd_ops, 2);
@@ -477,7 +469,7 @@ void kbd_init(struct kvm *kvm)
 
 static int xlast, ylast = -1;
 
-void doptr(int buttonMask,int x,int y,rfbClientPtr cl)
+void kbd_handle_ptr(int buttonMask,int x,int y,rfbClientPtr cl)
 {
 	int dx, dy;
 	char b1 = 0x8;
@@ -486,7 +478,6 @@ void doptr(int buttonMask,int x,int y,rfbClientPtr cl)
 
 	if (xlast >= 0 && ylast >= 0) {
 		dx = x - xlast;
-		//dy = y - ylast;
 		dy = ylast - y;
 
 		if (dy > 255)

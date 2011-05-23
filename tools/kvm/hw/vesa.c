@@ -80,14 +80,14 @@ void vesa__init(struct kvm *kvm)
 
 	kvm__register_mmio(VESA_MEM_ADDR, VESA_MEM_SIZE, &vesa_mmio_callback);
 
-	pthread_create(&thread, NULL, vesa__dovnc, kvm);
+	pthread_create(&thread, NULL, vesa__vnc_thread, kvm);
 }
 
 /*
  * This starts a VNC server to display the framebuffer.
  * It's not altogether clear this belongs here rather than in kvm-run.c
  */
-void *vesa__dovnc(void *v)
+void *vesa__vnc_thread(void *v)
 {
 	/*
 	 * Make a fake argc and argv because the getscreen function
@@ -101,8 +101,8 @@ void *vesa__dovnc(void *v)
 	server = rfbGetScreen(&argc, (char **) argv, VESA_WIDTH, VESA_HEIGHT, 8, 3, 4);
 	server->frameBuffer		= videomem;
 	server->alwaysShared		= TRUE;
-	server->kbdAddEvent		= dokey;
-	server->ptrAddEvent 		= doptr;
+	server->kbdAddEvent		= kbd_handle_key;
+	server->ptrAddEvent 		= kbd_handle_ptr;
 	rfbInitServer(server);
 
 	while (rfbIsActive(server)) {
