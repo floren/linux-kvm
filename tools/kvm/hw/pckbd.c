@@ -36,7 +36,7 @@ static void kbd_update_irq(void)
 	u8 klevel, mlevel = 0;
 
 	state.status &= ~KBD_OBF;
-	state.status &= ~MOUSE_OBF;
+	state.status &= ~AUX_OBF;
 
 	if (state.kcount == 0) {
 		state.status &= ~KBD_OBF; // unset output buffer full bit
@@ -48,12 +48,12 @@ static void kbd_update_irq(void)
 
 	if (klevel == 0 && state.mcount != 0) {
 		state.status |= KBD_OBF;
-		state.status |= MOUSE_OBF;
+		state.status |= AUX_OBF;
 		mlevel = 1;
 	}
 
 	kvm__irq_line(self, KBD_IRQ, klevel);
-	kvm__irq_line(self, MOUSE_IRQ, mlevel);
+	kvm__irq_line(self, AUX_IRQ, mlevel);
 }
 
 static void mouse_queue(u8 c)
@@ -89,19 +89,19 @@ void kbd_write_command(u32 addr, u32 val)
 			kbd_queue(state.mode);
 			break;
 		case CMD_WRITE_MODE:
-		case CMD_WRITE_MOUSE:
+		case CMD_WRITE_AUX:
 		case CMD_WRITE_AUX_BUF:
 			state.write_cmd = val;
 			break;
-		case CMD_TEST_MOUSE:
+		case CMD_TEST_AUX:
 			// 0x0 means we're a normal PS/2 mouse
 			mouse_queue(0x0);
 			break;
-		case CMD_DISABLE_MOUSE:
-			state.mode |= MODE_DISABLE_MOUSE;
+		case CMD_DISABLE_AUX:
+			state.mode |= MODE_DISABLE_AUX;
 			break;
-		case CMD_ENABLE_MOUSE:
-			state.mode &= ~MODE_DISABLE_MOUSE;
+		case CMD_ENABLE_AUX:
+			state.mode &= ~MODE_DISABLE_AUX;
 			break;
 		default:
 			break;
@@ -125,7 +125,7 @@ u32 kbd_read_data(void)
 		if (state.mread == QUEUE_SIZE)
 			state.mread = 0;
 		state.mcount--;
-		kvm__irq_line(self, MOUSE_IRQ, 0);
+		kvm__irq_line(self, AUX_IRQ, 0);
 		kbd_update_irq();
 	} else if (state.kcount == 0) {
 		i = state.kread - 1;
@@ -152,12 +152,12 @@ void kbd_write_data(u32 addr, u32 val)
 			mouse_queue(val);
 			mouse_queue(RESPONSE_ACK);
 			break;
-		case CMD_WRITE_MOUSE:
+		case CMD_WRITE_AUX:
 			mouse_queue(RESPONSE_ACK);
 			switch (val) {
 				case 0xe6:
 					// set scaling = 1:1
-					state.mstatus &= ~0x10;
+					state.mstatus &= ~AUX_SCALING_FLAG;
 					break;
 				case 0xe8:
 					// set resolution
@@ -176,10 +176,10 @@ void kbd_write_data(u32 addr, u32 val)
 					state.msample = val;
 					break;
 				case 0xf4:
-					state.mstatus |= MOUSE_ENABLE_REPORTING;
+					state.mstatus |= AUX_ENABLE_REPORTING;
 					break;
 				case 0xf5:
-					state.mstatus &= ~MOUSE_ENABLE_REPORTING;
+					state.mstatus &= ~AUX_ENABLE_REPORTING;
 					break;
 				case 0xf6:
 					// set defaults
@@ -187,14 +187,15 @@ void kbd_write_data(u32 addr, u32 val)
 				case 0xff:
 					// reset
 					state.mstatus = 0x0;
-					state.mres = 0x2;
-					state.msample = 100;
+					state.mres = AUX_DEFAULT_RESOLUTION;
+					state.msample = AUX_DEFAULT_SAMPLE;
 					break;
 				default:
 					break;
 			}
 			break;
 		case 0:
+			// Just send the ID
 			kbd_queue(RESPONSE_ACK);
 			kbd_queue(0xab);
 			kbd_queue(0x41);
@@ -209,13 +210,13 @@ void kbd_write_data(u32 addr, u32 val)
 
 static void kbd_reset(void)
 {
-	state.status = 0x1c;
-	state.mode = 0x03;
+	state.status = KBD_STATUS_SYS | KBD_STATUS_A2 | KBD_STATUS_INH; // 0x1c
+	state.mode = KBD_MODE_KBD_INT | KBD_MODE_SYS; // 0x3
 	state.kread = state.kwrite = state.kcount = 0;
 	state.mread = state.mwrite = state.mcount = 0;
 	state.mstatus = 0x0;
-	state.mres = 0x02;
-	state.msample = 100;
+	state.mres = AUX_DEFAULT_RESOLUTION;
+	state.msample = AUX_DEFAULT_SAMPLE;
 }
 
 static char letters[26] = {
