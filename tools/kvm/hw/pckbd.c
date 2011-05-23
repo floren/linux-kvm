@@ -430,6 +430,40 @@ void kbd_handle_key(rfbBool down, rfbKeySym key, rfbClientPtr cl)
 		kbd_queue(tosend);
 }
 
+static int xlast, ylast = -1;
+
+void kbd_handle_ptr(int buttonMask,int x,int y,rfbClientPtr cl)
+{
+	int dx, dy;
+	char b1 = 0x8;
+
+	b1 |= buttonMask;
+
+	if (xlast >= 0 && ylast >= 0) {
+		dx = x - xlast;
+		dy = ylast - y;
+
+		if (dy > 255)
+			b1 |= 0x80;
+		if (dx > 255)
+			b1 |= 0x40;
+
+		if (dy < 0)
+			b1 |= 0x20;
+		if (dx < 0)
+			b1 |= 0x10;
+
+		mouse_queue(b1);
+		mouse_queue(dx);
+		mouse_queue(dy);
+	}
+
+	xlast = x;
+	ylast = y;
+	rfbDefaultPtrAddEvent(buttonMask, x, y, cl);
+}
+
+
 static bool kbd_in(struct kvm *self, uint16_t port, void *data, int size, uint32_t count)
 {
 	uint32_t result;
@@ -466,37 +500,4 @@ void kbd__init(struct kvm *kvm)
 	kbd_reset();
 	kvm__irq_line(kvm, 1, 0); // kbd = irq 1
 	kvm__irq_line(kvm, 12, 0); // mouse = irq 12
-}
-
-static int xlast, ylast = -1;
-
-void kbd_handle_ptr(int buttonMask,int x,int y,rfbClientPtr cl)
-{
-	int dx, dy;
-	char b1 = 0x8;
-
-	b1 |= buttonMask;
-
-	if (xlast >= 0 && ylast >= 0) {
-		dx = x - xlast;
-		dy = ylast - y;
-
-		if (dy > 255)
-			b1 |= 0x80;
-		if (dx > 255)
-			b1 |= 0x40;
-
-		if (dy < 0)
-			b1 |= 0x20;
-		if (dx < 0)
-			b1 |= 0x10;
-
-		mouse_queue(b1);
-		mouse_queue(dx);
-		mouse_queue(dy);
-	}
-
-	xlast = x;
-	ylast = y;
-	rfbDefaultPtrAddEvent(buttonMask, x, y, cl);
 }
