@@ -1,10 +1,11 @@
 #include "kvm/kvm.h"
 
-#include "kvm/cpufeature.h"
-#include "kvm/interrupt.h"
 #include "kvm/boot-protocol.h"
-#include "kvm/util.h"
+#include "kvm/cpufeature.h"
+#include "kvm/read-write.h"
+#include "kvm/interrupt.h"
 #include "kvm/mptable.h"
+#include "kvm/util.h"
 
 #include <linux/kvm.h>
 
@@ -84,7 +85,7 @@ static int kvm__check_extensions(struct kvm *kvm)
 
 	for (i = 0; i < ARRAY_SIZE(kvm_req_ext); i++) {
 		if (!kvm__supports_extension(kvm, kvm_req_ext[i].code)) {
-			error("Unsuppored KVM extension detected: %s",
+			pr_error("Unsuppored KVM extension detected: %s",
 				kvm_req_ext[i].name);
 			return (int)-i;
 		}
@@ -319,7 +320,7 @@ static int load_flat_binary(struct kvm *kvm, int fd)
 static const char *BZIMAGE_MAGIC	= "HdrS";
 
 static bool load_bzimage(struct kvm *kvm, int fd_kernel,
-			int fd_initrd, const char *kernel_cmdline)
+			int fd_initrd, const char *kernel_cmdline, u16 vidmode)
 {
 	struct boot_params *kern_boot;
 	unsigned long setup_sects;
@@ -382,6 +383,7 @@ static bool load_bzimage(struct kvm *kvm, int fd_kernel,
 	kern_boot->hdr.type_of_loader	= 0xff;
 	kern_boot->hdr.heap_end_ptr	= 0xfe00;
 	kern_boot->hdr.loadflags	|= CAN_USE_HEAP;
+	kern_boot->hdr.vid_mode		= vidmode;
 
 	/*
 	 * Read initrd image into guest memory
@@ -422,8 +424,25 @@ static bool load_bzimage(struct kvm *kvm, int fd_kernel,
 	return true;
 }
 
+/* RFC 1952 */
+#define GZIP_ID1		0x1f
+#define GZIP_ID2		0x8b
+
+static bool initrd_check(int fd)
+{
+	unsigned char id[2];
+
+	if (read_in_full(fd, id, ARRAY_SIZE(id)) < 0)
+		return false;
+
+	if (lseek(fd, 0, SEEK_SET) < 0)
+		die_perror("lseek");
+
+	return id[0] == GZIP_ID1 && id[1] == GZIP_ID2;
+}
+
 bool kvm__load_kernel(struct kvm *kvm, const char *kernel_filename,
-		const char *initrd_filename, const char *kernel_cmdline)
+		const char *initrd_filename, const char *kernel_cmdline, u16 vidmode)
 {
 	bool ret;
 	int fd_kernel = -1, fd_initrd = -1;
@@ -436,9 +455,12 @@ bool kvm__load_kernel(struct kvm *kvm, const char *kernel_filename,
 		fd_initrd = open(initrd_filename, O_RDONLY);
 		if (fd_initrd < 0)
 			die("Unable to open initrd %s", initrd_filename);
+
+		if (!initrd_check(fd_initrd))
+			die("%s is not an initrd", initrd_filename);
 	}
 
-	ret = load_bzimage(kvm, fd_kernel, fd_initrd, kernel_cmdline);
+	ret = load_bzimage(kvm, fd_kernel, fd_initrd, kernel_cmdline, vidmode);
 
 	if (initrd_filename)
 		close(fd_initrd);
@@ -446,7 +468,7 @@ bool kvm__load_kernel(struct kvm *kvm, const char *kernel_filename,
 	if (ret)
 		goto found_kernel;
 
-	warning("%s is not a bzImage. Trying to load it as a flat binary...", kernel_filename);
+	pr_warning("%s is not a bzImage. Trying to load it as a flat binary...", kernel_filename);
 
 	ret = load_flat_binary(kvm, fd_kernel);
 	if (ret)

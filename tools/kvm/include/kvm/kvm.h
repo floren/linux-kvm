@@ -11,6 +11,8 @@
 #define KVM_32BIT_GAP_SIZE	(512 << 20)
 #define KVM_32BIT_GAP_START	((1ULL << 32) - KVM_32BIT_GAP_SIZE)
 
+#define SIGKVMEXIT		(SIGUSR1 + 2)
+
 struct kvm {
 	int			sys_fd;		/* For system ioctls(), i.e. /dev/kvm */
 	int			vm_fd;		/* For VM ioctls() */
@@ -30,6 +32,8 @@ struct kvm {
 	struct interrupt_table	interrupt_table;
 
 	const char		*vmlinux;
+	struct disk_image       **disks;
+	int                     nr_disks;
 };
 
 struct kvm *kvm__init(const char *kvm_dev, unsigned long ram_size);
@@ -37,7 +41,7 @@ int kvm__max_cpus(struct kvm *kvm);
 void kvm__init_ram(struct kvm *kvm);
 void kvm__delete(struct kvm *kvm);
 bool kvm__load_kernel(struct kvm *kvm, const char *kernel_filename,
-			const char *initrd_filename, const char *kernel_cmdline);
+			const char *initrd_filename, const char *kernel_cmdline, u16 vidmode);
 void kvm__setup_bios(struct kvm *kvm);
 void kvm__start_timer(struct kvm *kvm);
 void kvm__stop_timer(struct kvm *kvm);

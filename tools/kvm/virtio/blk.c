@@ -140,16 +140,16 @@ static bool virtio_blk_do_io_request(struct kvm *kvm,
 
 	switch (req->type) {
 	case VIRTIO_BLK_T_IN:
-		block_cnt	= disk_image__read_sector_iov(bdev->disk, req->sector, iov + 1, in + out - 2);
+		block_cnt	= disk_image__read(bdev->disk, req->sector, iov + 1, in + out - 2);
 		break;
 	case VIRTIO_BLK_T_OUT:
-		block_cnt	= disk_image__write_sector_iov(bdev->disk, req->sector, iov + 1, in + out - 2);
+		block_cnt	= disk_image__write(bdev->disk, req->sector, iov + 1, in + out - 2);
 		break;
 	case VIRTIO_BLK_T_FLUSH:
 		block_cnt       = disk_image__flush(bdev->disk);
 		break;
 	default:
-		warning("request type %d", req->type);
+		pr_warning("request type %d", req->type);
 		block_cnt	= -1;
 		break;
 	}
@@ -319,4 +319,20 @@ void virtio_blk__init(struct kvm *kvm, struct disk_image *disk)
 	pci__register(&bdev->pci_hdr, dev);
 
 	ioport__register(blk_dev_base_addr, &virtio_blk_io_ops, IOPORT_VIRTIO_BLK_SIZE);
+}
+
+void virtio_blk__init_all(struct kvm *kvm)
+{
+	int i;
+
+	for (i = 0; i < kvm->nr_disks; i++)
+		virtio_blk__init(kvm, kvm->disks[i]);
+}
+
+void virtio_blk__delete_all(struct kvm *kvm)
+{
+	int i;
+
+	for (i = 0; i < kvm->nr_disks; i++)
+		free(bdevs[i]);
 }

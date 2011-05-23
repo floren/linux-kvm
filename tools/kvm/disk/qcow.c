@@ -103,7 +103,7 @@ out_error:
 	goto out;
 }
 
-static int qcow1_read_sector(struct disk_image *disk, u64 sector, void *dst, u32 dst_len)
+static ssize_t qcow1_read_sector(struct disk_image *disk, u64 sector, void *dst, u32 dst_len)
 {
 	struct qcow *q = disk->priv;
 	struct qcow_header *header = q->header;
@@ -129,7 +129,7 @@ static int qcow1_read_sector(struct disk_image *disk, u64 sector, void *dst, u32
 		sector		+= (nr >> SECTOR_SHIFT);
 	}
 
-	return 0;
+	return dst_len;
 }
 
 static inline u64 file_size(int fd)
@@ -291,7 +291,7 @@ error:
 	return -1;
 }
 
-static int qcow1_write_sector(struct disk_image *disk, u64 sector, void *src, u32 src_len)
+static ssize_t qcow1_write_sector(struct disk_image *disk, u64 sector, void *src, u32 src_len)
 {
 	struct qcow *q = disk->priv;
 	struct qcow_header *header = q->header;
@@ -317,39 +317,42 @@ static int qcow1_write_sector(struct disk_image *disk, u64 sector, void *src, u3
 		offset		+= nr;
 	}
 
-	return 0;
+	return nr_written;
 }
 
-static int qcow1_nowrite_sector(struct disk_image *disk, u64 sector, void *src, u32 src_len)
+static ssize_t qcow1_nowrite_sector(struct disk_image *disk, u64 sector, void *src, u32 src_len)
 {
 	/* I/O error */
+	pr_info("qcow1_nowrite_sector: no write support\n");
 	return -1;
 }
 
-static void qcow1_disk_close(struct disk_image *disk)
+static int qcow1_disk_close(struct disk_image *disk)
 {
 	struct qcow *q;
 
 	if (!disk)
-		return;
+		return 0;
 
 	q = disk->priv;
 
 	free(q->table.l1_table);
 	free(q->header);
 	free(q);
+
+	return 0;
 }
 
 static struct disk_image_operations qcow1_disk_readonly_ops = {
 	.read_sector		= qcow1_read_sector,
 	.write_sector		= qcow1_nowrite_sector,
-	.close			= qcow1_disk_close
+	.close			= qcow1_disk_close,
 };
 
 static struct disk_image_operations qcow1_disk_ops = {
 	.read_sector		= qcow1_read_sector,
 	.write_sector		= qcow1_write_sector,
-	.close			= qcow1_disk_close
+	.close			= qcow1_disk_close,
 };
 
 static int qcow_read_l1_table(struct qcow *q)
@@ -433,10 +436,13 @@ static struct disk_image *qcow2_probe(int fd, bool readonly)
 	if (qcow_read_l1_table(q) < 0)
 		goto error;
 
+	/*
+	 * Do not use mmap use read/write instead
+	 */
 	if (readonly)
-		disk_image = disk_image__new(fd, h->size, &qcow1_disk_readonly_ops);
+		disk_image = disk_image__new(fd, h->size, &qcow1_disk_readonly_ops, DISK_IMAGE_NOMMAP);
 	else
-		disk_image = disk_image__new(fd, h->size, &qcow1_disk_ops);
+		disk_image = disk_image__new(fd, h->size, &qcow1_disk_ops, DISK_IMAGE_NOMMAP);
 
 	if (!disk_image)
 		goto error;
@@ -527,10 +533,13 @@ static struct disk_image *qcow1_probe(int fd, bool readonly)
 	if (qcow_read_l1_table(q) < 0)
 		goto error;
 
+	/*
+	 * Do not use mmap use read/write instead
+	 */
 	if (readonly)
-		disk_image = disk_image__new(fd, h->size, &qcow1_disk_readonly_ops);
+		disk_image = disk_image__new(fd, h->size, &qcow1_disk_readonly_ops, DISK_IMAGE_NOMMAP);
 	else
-		disk_image = disk_image__new(fd, h->size, &qcow1_disk_ops);
+		disk_image = disk_image__new(fd, h->size, &qcow1_disk_ops, DISK_IMAGE_NOMMAP);
 
 	if (!disk_image)
 		goto error;

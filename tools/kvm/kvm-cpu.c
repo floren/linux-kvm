@@ -97,7 +97,7 @@ void kvm_cpu__enable_singlestep(struct kvm_cpu *vcpu)
 	};
 
 	if (ioctl(vcpu->vcpu_fd, KVM_SET_GUEST_DEBUG, &debug) < 0)
-		warning("KVM_SET_GUEST_DEBUG failed");
+		pr_warning("KVM_SET_GUEST_DEBUG failed");
 }
 
 static struct kvm_msrs *kvm_msrs__new(size_t nmsrs)
@@ -379,6 +379,11 @@ void kvm_cpu__run(struct kvm_cpu *vcpu)
 		die_perror("KVM_RUN failed");
 }
 
+static void kvm_cpu_exit_handler(int signum)
+{
+	/* Don't do anything here */
+}
+
 int kvm_cpu__start(struct kvm_cpu *cpu)
 {
 	sigset_t sigset;
@@ -387,6 +392,8 @@ int kvm_cpu__start(struct kvm_cpu *cpu)
 	sigaddset(&sigset, SIGALRM);
 
 	pthread_sigmask(SIG_BLOCK, &sigset, NULL);
+
+	signal(SIGKVMEXIT, kvm_cpu_exit_handler);
 
 	kvm_cpu__setup_cpuid(cpu);
 	kvm_cpu__reset_vcpu(cpu);
@@ -430,7 +437,11 @@ int kvm_cpu__start(struct kvm_cpu *cpu)
 			break;
 		}
 		case KVM_EXIT_INTR:
-			break;
+			/*
+			 * Currently we only handle exit signal, which means
+			 * we just exit if KVM_RUN exited due to a signal.
+			 */
+			goto exit_kvm;
 		case KVM_EXIT_SHUTDOWN:
 			goto exit_kvm;
 		default:

@@ -25,11 +25,12 @@
 #include <kvm/rtc.h>
 #include <kvm/term.h>
 #include <kvm/ioport.h>
-#include <kvm/dummy-vesa.h>
 #include <kvm/threadpool.h>
 #include <kvm/barrier.h>
 #include <kvm/pckbd.h>
 #include <kvm/symbol.h>
+#include <kvm/virtio-9p.h>
+#include <kvm/vesa.h>
 
 /* header files for gitish interface  */
 #include <kvm/kvm-run.h>
@@ -46,7 +47,6 @@
 #define MB_SHIFT		(20)
 #define MIN_RAM_SIZE_MB		(64ULL)
 #define MIN_RAM_SIZE_BYTE	(MIN_RAM_SIZE_MB << MB_SHIFT)
-#define MAX_DISK_IMAGES		4
 
 static struct kvm *kvm;
 static struct kvm_cpu *kvm_cpus[KVM_NR_CPUS];
@@ -65,6 +65,7 @@ static const char *network;
 static const char *host_ip_addr;
 static const char *guest_mac;
 static const char *script;
+static const char *virtio_9p_dir;
 static bool single_step;
 static bool readonly_image[MAX_DISK_IMAGES];
 static bool virtio_rng;
@@ -74,7 +75,7 @@ extern int  active_console;
 
 bool do_debug_print = false;
 
-static int nrcpus = 1;
+static int nrcpus;
 
 static const char * const run_usage[] = {
 	"kvm run [<options>] [<kernel image>]",
@@ -111,6 +112,8 @@ static const struct option options[] = {
 	OPT_BOOLEAN('\0', "rng", &virtio_rng,
 			"Enable virtio Random Number Generator"),
 	OPT_STRING('\0', "kvm-dev", &kvm_dev, "kvm-dev", "KVM device file"),
+	OPT_STRING('\0', "virtio-9p", &virtio_9p_dir, "root dir",
+			"Enable 9p over virtio"),
 	OPT_BOOLEAN('\0', "vnc", &vnc, "Enable VNC framebuffer"),
 
 	OPT_GROUP("Kernel options:"),
@@ -272,8 +275,16 @@ static u64 host_ram_size(void)
 	long nr_pages;
 
 	nr_pages	= sysconf(_SC_PHYS_PAGES);
+	if (nr_pages < 0) {
+		pr_warning("sysconf(_SC_PHYS_PAGES) failed");
+		return 0;
+	}
 
 	page_size	= sysconf(_SC_PAGE_SIZE);
+	if (page_size < 0) {
+		pr_warning("sysconf(_SC_PAGE_SIZE) failed");
+		return 0;
+	}
 
 	return (nr_pages * page_size) >> MB_SHIFT;
 }
@@ -292,6 +303,8 @@ static u64 get_ram_size(int nr_cpus)
 	ram_size	= 64 * (nr_cpus + 3);
 
 	available	= host_ram_size() * RAM_SIZE_RATIO;
+	if (!available)
+		available = MIN_RAM_SIZE_MB;
 
 	if (ram_size > available)
 		ram_size	= available;
@@ -390,6 +403,11 @@ static char *host_image(char *cmd_line, size_t size)
 	return t;
 }
 
+void kvm_run_help(void)
+{
+	usage_with_options(run_usage, options);
+}
+
 int kvm_cmd_run(int argc, const char **argv, const char *prefix)
 {
 	struct virtio_net_parameters net_params;
@@ -399,10 +417,14 @@ int kvm_cmd_run(int argc, const char **argv, const char *prefix)
 	int max_cpus;
 	char *hi;
 	int i;
+	void *ret;
+	u16 vidmode = 0;
 
 	signal(SIGALRM, handle_sigalrm);
 	signal(SIGQUIT, handle_sigquit);
 	signal(SIGUSR1, handle_sigusr1);
+
+	nr_online_cpus = sysconf(_SC_NPROCESSORS_ONLN);
 
 	while (argc != 0) {
 		argc = parse_options(argc, argv, options, run_usage,
@@ -434,7 +456,9 @@ int kvm_cmd_run(int argc, const char **argv, const char *prefix)
 
 	vmlinux_filename = find_vmlinux();
 
-	if (nrcpus < 1 || nrcpus > KVM_NR_CPUS)
+	if (nrcpus == 0)
+		nrcpus = nr_online_cpus;
+	else if (nrcpus < 1 || nrcpus > KVM_NR_CPUS)
 		die("Number of CPUs %d is out of [1;%d] range", nrcpus, KVM_NR_CPUS);
 
 	if (!ram_size)
@@ -444,7 +468,7 @@ int kvm_cmd_run(int argc, const char **argv, const char *prefix)
 		die("Not enough memory specified: %lluMB (min %lluMB)", ram_size, MIN_RAM_SIZE_MB);
 
 	if (ram_size > host_ram_size())
-		warning("Guest memory size %lluMB exceeds host physical RAM size %lluMB", ram_size, host_ram_size());
+		pr_warning("Guest memory size %lluMB exceeds host physical RAM size %lluMB", ram_size, host_ram_size());
 
 	ram_size <<= MB_SHIFT;
 
@@ -468,6 +492,15 @@ int kvm_cmd_run(int argc, const char **argv, const char *prefix)
 	if (!script)
 		script = DEFAULT_SCRIPT;
 
+	if (virtio_9p_dir) {
+		char tmp[PATH_MAX];
+
+		if (realpath(virtio_9p_dir, tmp))
+			virtio_9p__init(kvm, tmp);
+		else
+			die("Failed resolving 9p path");
+	}
+
 	symbol__init(vmlinux_filename);
 
 	term_init();
@@ -484,11 +517,15 @@ int kvm_cmd_run(int argc, const char **argv, const char *prefix)
 	kvm->nrcpus = nrcpus;
 
 	memset(real_cmdline, 0, sizeof(real_cmdline));
-//	strcpy(real_cmdline, "notsc nolapic noacpi pci=conf1 console=ttyS0 ");
-	strcpy(real_cmdline, "notsc nolapic noacpi pci=conf1 ");
-//	strcpy(real_cmdline, "notsc noapic noacpi pci=conf1 console=ttyS0 earlyprintk=serial");
-//	strcat(real_cmdline, " ");
-
+	strcpy(real_cmdline, "notsc noapic noacpi pci=conf1");
+	if (vnc) {
+		//strcat(real_cmdline, " video=vesafb console=tty0");
+		strcat(real_cmdline, " video=vesafb console=ttyS0");
+		vidmode = 0x312;
+	} else {
+		strcat(real_cmdline, " console=ttyS0 earlyprintk=serial");
+	}
+	strcat(real_cmdline, " ");
 	if (kernel_cmdline)
 		strlcat(real_cmdline, kernel_cmdline, sizeof(real_cmdline));
 
@@ -505,21 +542,21 @@ int kvm_cmd_run(int argc, const char **argv, const char *prefix)
 	if (!strstr(real_cmdline, "root="))
 		strlcat(real_cmdline, " root=/dev/vda rw ", sizeof(real_cmdline));
 
-	for (i = 0; i < image_count; i++) {
-		if (image_filename[i]) {
-			struct disk_image *disk = disk_image__open(image_filename[i], readonly_image[i]);
-			if (!disk)
-				die("unable to load disk image %s", image_filename[i]);
+	if (image_count) {
+		kvm->nr_disks = image_count;
+		kvm->disks    = disk_image__open_all(image_filename, readonly_image, image_count);
+		if (!kvm->disks)
+			die("Unable to load all disk images.");
 
-			virtio_blk__init(kvm, disk);
-		}
+		virtio_blk__init_all(kvm);
 	}
+
 	free(hi);
 
 	printf("  # kvm run -k %s -m %Lu -c %d\n", kernel_filename, ram_size / 1024 / 1024, nrcpus);
 
 	if (!kvm__load_kernel(kvm, kernel_filename, initrd_filename,
-				real_cmdline))
+				real_cmdline, vidmode))
 		die("unable to load kernel %s", kernel_filename);
 
 	kvm->vmlinux		= vmlinux_filename;
@@ -534,8 +571,6 @@ int kvm_cmd_run(int argc, const char **argv, const char *prefix)
 
 	if (active_console == CONSOLE_VIRTIO)
 		virtio_console__init(kvm);
-
-	dummy_vesa__init(kvm);
 
 	if (virtio_rng)
 		virtio_rng__init(kvm);
@@ -575,30 +610,34 @@ int kvm_cmd_run(int argc, const char **argv, const char *prefix)
 
 	kvm__init_ram(kvm);
 
-	nr_online_cpus = sysconf(_SC_NPROCESSORS_ONLN);
-	thread_pool__init(nr_online_cpus);
-
 	if (vnc) {
 		kbd_init(kvm);
-		pthread_t thread;
-		pthread_create(&thread, NULL, dovnc, kvm);
+		vesa__init(kvm);
 	}
+
+	thread_pool__init(nr_online_cpus);
 
 	for (i = 0; i < nrcpus; i++) {
 		if (pthread_create(&kvm_cpus[i]->thread, NULL, kvm_cpu_thread, kvm_cpus[i]) != 0)
 			die("unable to create KVM VCPU thread");
 	}
 
-	for (i = 0; i < nrcpus; i++) {
-		void *ret;
+	/* Only VCPU #0 is going to exit by itself when shutting down */
+	if (pthread_join(kvm_cpus[0]->thread, &ret) != 0)
+		exit_code = 1;
 
+	for (i = 1; i < nrcpus; i++) {
+		pthread_kill(kvm_cpus[i]->thread, SIGKVMEXIT);
 		if (pthread_join(kvm_cpus[i]->thread, &ret) != 0)
 			die("pthread_join");
 
 		if (ret != NULL)
-			exit_code	= 1;
+			exit_code = 1;
 	}
 
+	virtio_blk__delete_all(kvm);
+
+	disk_image__close_all(kvm->disks, image_count);
 	kvm__delete(kvm);
 
 	if (!exit_code)

@@ -41,7 +41,7 @@ ENTRY(bios_int10)
 	movl		%esp, %eax
 	/* this is way easier than doing it in assembly */
 	/* just push all the regs and jump to a C handler */
-	call	int10handler
+	call	int10_handler
 
 	popl	%eax
 	popl	%ebx
@@ -56,7 +56,6 @@ ENTRY(bios_int10)
 
 	IRET
 
-	
 /*
  * private IRQ data
  */

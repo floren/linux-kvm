@@ -7,17 +7,16 @@ else
 endif
 export E Q
 
+include config/utilities.mak
+include config/feature-tests.mak
+
 PROGRAM	= kvm
 FIND = find
 CSCOPE = cscope
 TAGS = ctags
 
-OBJS += pckbd.o
-OBJS += dummy-vesa.o
-OBJS	+= 8250-serial.o
 OBJS	+= cpuid.o
 OBJS	+= read-write.o
-OBJS	+= disk-image.o
 OBJS	+= interrupt.o
 OBJS	+= ioport.o
 OBJS	+= kvm.o
@@ -25,8 +24,8 @@ OBJS	+= kvm-cpu.o
 OBJS	+= main.o
 OBJS	+= mmio.o
 OBJS	+= pci.o
-OBJS	+= rtc.o
-OBJS	+= symbol.o
+OBJS	+= hw/rtc.o
+OBJS	+= hw/serial.o
 OBJS	+= term.o
 OBJS	+= util.o
 OBJS	+= virtio/blk.o
@@ -39,12 +38,34 @@ OBJS    += util/strbuf.o
 OBJS    += kvm-help.o
 OBJS    += kvm-cmd.o
 OBJS    += kvm-run.o
-OBJS    += qcow.o
+OBJS    += disk/qcow.o
+OBJS	+= disk/core.o
+OBJS    += disk/raw.o
+OBJS    += disk/blk.o
 OBJS    += mptable.o
 OBJS    += threadpool.o
 OBJS    += irq.o
-OBJS    += ../../lib/rbtree.o
+OBJS    += rbtree.o
 OBJS    += util/rbtree-interval.o
+OBJS    += virtio/9p.o
+
+
+FLAGS_BFD=$(CFLAGS) -lbfd
+has_bfd := $(call try-cc,$(SOURCE_BFD),$(FLAGS_BFD))
+ifeq ($(has_bfd),y)
+	CFLAGS	+= -DCONFIG_HAS_BFD
+	OBJS	+= symbol.o
+	LIBS	+= -lbfd
+endif
+
+FLAGS_VNCSERVER=$(CFLAGS) -lvncserver
+has_vncserver := $(call try-cc,$(SOURCE_VNCSERVER),$(FLAGS_VNCSERVER))
+ifeq ($(has_vncserver),y)
+	CFLAGS	+= -DCONFIG_HAS_VNCSERVER
+	OBJS	+= hw/vesa.o
+	OBJS += hw/pckbd.o
+	LIBS	+= -lvncserver
+endif
 
 DEPS	:= $(patsubst %.o,%.d,$(OBJS))
 
@@ -54,8 +75,6 @@ OBJS	+= bios/bios.o
 
 LIBS	+= -lrt
 LIBS	+= -lpthread
-#LIBS += -lvncserver
-LIBS	+= -lbfd
 
 # Additional ARCH settings for x86
 ARCH ?= $(shell echo $(uname_M) | sed -e s/i.86/i386/ -e s/sun4u/sparc64/ \
@@ -127,6 +146,8 @@ kvm-help.d: $(KVM_INCLUDE)/common-cmds.h
 
 $(OBJS):
 
+rbtree.o: ../../lib/rbtree.c
+	$(Q) $(CC) -c $(CFLAGS) $< -o $@
 %.o: %.c
 	$(E) "  CC      " $@
 	$(Q) $(CC) -c $(CFLAGS) $< -o $@
