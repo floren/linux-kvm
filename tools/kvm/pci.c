@@ -25,8 +25,6 @@ static bool pci_config_address_out(struct kvm *kvm, u16 port, void *data, int si
 {
 	void *p = pci_config_address_ptr(port);
 
-//	printf("in pci_config_address_out, port = %d, size = %d, count = %d\n", port, size, count);
-
 	memcpy(p, data, size);
 
 	return true;
@@ -35,8 +33,6 @@ static bool pci_config_address_out(struct kvm *kvm, u16 port, void *data, int si
 static bool pci_config_address_in(struct kvm *kvm, u16 port, void *data, int size, u32 count)
 {
 	void *p = pci_config_address_ptr(port);
-
-//	printf("in pci_config_address_in, port = %d, size = %d, count = %d\n", port, size, count);
 
 	memcpy(data, p, size);
 
@@ -50,7 +46,6 @@ static struct ioport_operations pci_config_address_ops = {
 
 static bool pci_config_data_out(struct kvm *kvm, u16 port, void *data, int size, u32 count)
 {
-//        printf("in pci_config_data_out, port = %d, size = %d, count = %d\n", port, size, count);
 	return true;
 }
 
@@ -77,8 +72,6 @@ static bool pci_config_data_in(struct kvm *kvm, u16 port, void *data, int size, 
 	unsigned long start;
 	u8 dev_num;
 
-	//printf("in pci_config_data_in, port = %d, size = %d, count = %d\n", port, size, count);
-
 	/*
 	 * If someone accesses PCI configuration space offsets that are not
 	 * aligned to 4 bytes, it uses ioports to signify that.
@@ -86,8 +79,6 @@ static bool pci_config_data_in(struct kvm *kvm, u16 port, void *data, int size, 
 	start = port - PCI_CONFIG_DATA;
 
 	dev_num		= pci_config_address.device_number;
-
-//	printf("pci_config_data_in, dev_num = %d\n", dev_num);
 
 	if (pci_device_exists(0, dev_num, 0)) {
 		unsigned long offset;

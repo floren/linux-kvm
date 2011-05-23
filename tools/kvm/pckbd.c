@@ -10,9 +10,17 @@
 #include <stdint.h>
 
 typedef struct KBDstate {
-	char 	q[QUEUE_SIZE]; // keyboard queue
-	int 	read, write; // indexes into the queue
-	int 	count; // number of elements in queue
+	char 	kq[QUEUE_SIZE]; // keyboard queue
+	int 	kread, kwrite; // indexes into the queue
+	int 	kcount; // number of elements in queue
+
+	char mq[QUEUE_SIZE];
+	int	mread, mwrite;
+	int	mcount;
+
+	u8	mstatus;
+	u8	mres;
+	u8	msample;
 
 	u8 	mode;
 	u8 	status;
@@ -25,38 +33,78 @@ static struct kvm *self;
 
 static void kbd_update_irq(void)
 {
-	u8 level;
-	if (!state.count) {
+	u8 klevel, mlevel = 0;
+
+	state.status &= ~0x01;
+	state.status &= ~0x20;
+
+	if (state.kcount == 0) {
 		state.status &= 0xfe; // unset output buffer full bit
-		level = 0;
+		klevel = 0;
 	} else {
 		state.status |= 0x01;
-		level = 1;
+		klevel = 1;
 	}
-	kvm__irq_line(self, 1, level);
+
+	if (klevel == 0 && state.mcount != 0) {
+		state.status |= 0x01;
+		state.status |= 0x20;
+		mlevel = 1;
+	}
+
+	kvm__irq_line(self, 1, klevel);
+	kvm__irq_line(self, 12, mlevel);
+}
+
+static void mouse_queue(u8 c)
+{
+	if (state.mcount >= QUEUE_SIZE)
+		return;
+
+	state.mq[state.mwrite++] = c;
+	if (state.mwrite == QUEUE_SIZE)
+		state.mwrite = 0;
+
+	state.mcount++;
+	kbd_update_irq();
 }
 
 static void kbd_queue(u8 c)
 {
-	if (state.count >= QUEUE_SIZE)
+	if (state.kcount >= QUEUE_SIZE)
 		return;
 
-	state.q[state.write++] = c;
-	if (state.write == QUEUE_SIZE)
-		state.write = 0;
+	state.kq[state.kwrite++] = c;
+	if (state.kwrite == QUEUE_SIZE)
+		state.kwrite = 0;
 
-	state.count++;
+	state.kcount++;
 	kbd_update_irq();
 }
 
 void kbd_write_command(u32 addr, u32 val)
 {
+	//printf("write command = 0x%x\n", val);
 	switch (val) {
 		case CMD_READ_MODE:
 			kbd_queue(state.mode);
 			break;
 		case CMD_WRITE_MODE:
+		case CMD_WRITE_MOUSE:
+		case CMD_WRITE_AUX_BUF:
 			state.write_cmd = val;
+			break;
+		case CMD_TEST_MOUSE:
+			// queue 0x0 to mouse buf
+			mouse_queue(0x0);
+			break;
+		case CMD_DISABLE_MOUSE:
+			state.mode |= 0x20;
+			//mouse_queue(RESPONSE_ACK);
+			break;
+		case CMD_ENABLE_MOUSE:
+			state.mode &= 0xDF;
+			//mouse_queue(RESPONSE_ACK);
 			break;
 		default:
 			break;
@@ -68,18 +116,26 @@ u32 kbd_read_data(void)
 	u32 ret;
 	int i;
 
-	if (state.count == 0) {
-		i = state.read - 1;
-		if (i < 0)
-			i = QUEUE_SIZE;
-		ret = state.q[i];
-	} else {
-		ret = state.q[state.read++];
-		if (state.read == QUEUE_SIZE)
-			state.read = 0;
-		state.count--;
+	if (state.kcount != 0) {
+		ret = state.kq[state.kread++];
+		if (state.kread == QUEUE_SIZE)
+			state.kread = 0;
+		state.kcount--;
 		kvm__irq_line(self, 1, 0);
 		kbd_update_irq();
+	} else if (state.mcount > 0) {
+		ret = state.mq[state.mread++];
+		if (state.mread == QUEUE_SIZE)
+			state.mread = 0;
+		state.mcount--;
+		kvm__irq_line(self, 12, 0);
+		kbd_update_irq();
+		//printf("reading mouse data 0x%x\n", ret);
+	} else if (state.kcount == 0) {
+		i = state.kread - 1;
+		if (i < 0)
+			i = QUEUE_SIZE;
+		ret = state.kq[i];
 	}
 	return ret;
 }
@@ -91,26 +147,83 @@ u32 kbd_read_status(void)
 
 void kbd_write_data(u32 addr, u32 val)
 {
+	//printf("write data = 0x%x\n", val);
 	switch (state.write_cmd) {
 		case CMD_WRITE_MODE:
+			state.mode = val;
+			kbd_update_irq();
+			break;
+		case CMD_WRITE_AUX_BUF:
+			// put val into the mouse queue
+			mouse_queue(val);
+			mouse_queue(RESPONSE_ACK);
+			break;
+		case 0:
 			/* I don't think this is supposed to work this way, but it does. */
 			kbd_queue(RESPONSE_ACK);
 			kbd_queue(0xab);
 			kbd_queue(0x41);
 			kbd_update_irq();
 			break;
+		case CMD_WRITE_MOUSE:
+			mouse_queue(RESPONSE_ACK);
+			switch (val) {
+				case 0xe6:
+					// set scaling = 1:1
+					state.mstatus &= ~0x10;
+					break;
+				case 0xe8:
+					// set resolution
+					break;
+				case 0xe9:
+					mouse_queue(state.mstatus);
+					mouse_queue(state.mres);
+					mouse_queue(state.msample);
+					break;
+				case 0xf2:
+					// send ID
+					mouse_queue(0x00);
+					break;
+				case 0xf3:
+					// set sample rate
+					state.msample = val;
+					break;
+				case 0xf4:
+					state.mstatus |= 0x20;
+					break;
+				case 0xf5:
+					state.mstatus &= ~0x20;
+					break;
+				case 0xf6:
+					// set defaults
+					break;
+				case 0xff:
+					// reset
+					state.mstatus = 0x0;
+					state.mres = 0x2;
+					state.msample = 100;
+					break;
+				default:
+					break;
+			}
+			break;
 		default:
 			/* Yeah whatever */
-			kbd_queue(RESPONSE_ACK);
+			//kbd_queue(RESPONSE_ACK);
 			break;
 	}
+	state.write_cmd = 0;
 }
 
 static void kbd_reset(void)
 {
-	state.status = 0x18;
-	state.mode = 0x01;
-	state.read = state.write = state.count = 0;
+	state.status = 0x1c;
+	state.mode = 0x03;
+	state.kread = state.kwrite = state.kcount = 0;
+	state.mread = state.mwrite = state.mcount = 0;
+	state.mstatus = 0x0;
+	state.mres = 0x02;
+	state.msample = 100;
 }
 
 static char letters[26] = {
@@ -358,5 +471,40 @@ void kbd_init(struct kvm *kvm)
 	ioport__register(0x60, &kbd_ops, 2);
 	ioport__register(0x64, &kbd_ops, 2);
 	kbd_reset();
-	kvm__irq_line(kvm, 1, 0);
+	kvm__irq_line(kvm, 1, 0); // kbd = irq 1
+	kvm__irq_line(kvm, 12, 0); // mouse = irq 12
+}
+
+static int xlast, ylast = -1;
+
+void doptr(int buttonMask,int x,int y,rfbClientPtr cl)
+{
+	int dx, dy;
+	char b1 = 0x8;
+
+	b1 |= buttonMask;
+
+	if (xlast >= 0 && ylast >= 0) {
+		dx = x - xlast;
+		//dy = y - ylast;
+		dy = ylast - y;
+
+		if (dy > 255)
+			b1 |= 0x80;
+		if (dx > 255)
+			b1 |= 0x40;
+
+		if (dy < 0)
+			b1 |= 0x20;
+		if (dx < 0)
+			b1 |= 0x10;
+
+		mouse_queue(b1);
+		mouse_queue(dx);
+		mouse_queue(dy);
+	}
+
+	xlast = x;
+	ylast = y;
+	rfbDefaultPtrAddEvent(buttonMask, x, y, cl);
 }

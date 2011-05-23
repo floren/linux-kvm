@@ -100,6 +100,7 @@ void* dovnc(void* v)
 	server->frameBuffer=videomem;
 	server->alwaysShared = TRUE;
 	server->kbdAddEvent = dokey;
+	server->ptrAddEvent = doptr;
 	rfbInitServer(server);
 	while (rfbIsActive(server)) {
 		rfbMarkRectAsModified(server, 0, 0, VESA_WIDTH, VESA_HEIGHT);
