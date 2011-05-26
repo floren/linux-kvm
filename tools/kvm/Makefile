@@ -175,9 +175,10 @@ bios/bios-rom.bin: bios/bios-rom.S bios/e820.c
 	$(E) "  CC      " $@
 	$(Q) $(CC) -include code16gcc.h $(CFLAGS) $(BIOS_CFLAGS) -c -s bios/e820.c -o bios/e820.o
 	$(Q) $(CC) -include code16gcc.h $(CFLAGS) $(BIOS_CFLAGS) -c -s bios/int10.c -o bios/int10.o
+	$(Q) $(CC) -include code16gcc.h $(CFLAGS) $(BIOS_CFLAGS) -c -s bios/int13.c -o bios/int13.o
 	$(Q) $(CC) $(CFLAGS) $(BIOS_CFLAGS) -c -s bios/bios-rom.S -o bios/bios-rom.o
 	$(E) "  LD      " $@
-	$(Q) ld -T bios/rom.ld.S -o bios/bios-rom.bin.elf bios/bios-rom.o bios/e820.o bios/int10.o
+	$(Q) ld -T bios/rom.ld.S -o bios/bios-rom.bin.elf bios/bios-rom.o bios/e820.o bios/int10.o bios/int13.o
 	$(E) "  OBJCOPY " $@
 	$(Q) objcopy -O binary -j .text -j .data bios/bios-rom.bin.elf bios/bios-rom.bin
 	$(E) "  NM      " $@

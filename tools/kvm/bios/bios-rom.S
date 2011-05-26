@@ -62,6 +62,39 @@ ENTRY(bios_int10)
 cursor:		.long 0
 ENTRY_END(bios_int10)
 
+ENTRY(bios_int13)
+	pushw	%fs
+	pushl	%es
+	pushl	%edi
+	pushl	%esi
+	pushl	%ebp
+	pushl	%esp
+	pushl	%edx
+	pushl	%ecx
+	pushl	%ebx
+	pushl	%eax
+	pushf
+
+	movl		%esp, %eax
+	/* this is way easier than doing it in assembly */
+	/* just push all the regs and jump to a C handler */
+	call	int13_handler
+
+	popf
+	popl	%eax
+	popl	%ebx
+	popl	%ecx
+	popl	%edx
+	popl	%esp
+	popl	%ebp
+	popl	%esi
+	popl	%edi
+	popl	%es
+	popw	%fs
+
+	IRET
+ENTRY_END(bios_int13)
+
 #define EFLAGS_CF	(1 << 0)
 
 ENTRY(bios_int15)

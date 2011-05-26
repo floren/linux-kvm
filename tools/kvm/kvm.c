@@ -441,6 +441,26 @@ static bool initrd_check(int fd)
 	return id[0] == GZIP_ID1 && id[1] == GZIP_ID2;
 }
 
+bool kvm__load_mbr(struct kvm *kvm, const char *kernel_filename)
+{
+	void *p;
+	int fd = -1;
+
+	fd = open(kernel_filename, O_RDONLY);
+	if (fd < 0)
+		die("gaack can't open %s", kernel_filename);
+
+	p = guest_real_to_host(kvm, 0x0, 0x7c00);
+
+	read(fd, p, 512);
+
+	kvm->boot_selector	= 0x0;
+	kvm->boot_ip		= 0x7c00;
+	kvm->boot_sp		= 0x7c00;
+
+	return true;
+}
+
 bool kvm__load_kernel(struct kvm *kvm, const char *kernel_filename,
 		const char *initrd_filename, const char *kernel_cmdline, u16 vidmode)
 {

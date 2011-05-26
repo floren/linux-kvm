@@ -70,6 +70,7 @@ static bool single_step;
 static bool readonly_image[MAX_DISK_IMAGES];
 static bool virtio_rng;
 static bool vnc;
+static bool mbr;
 extern bool ioport_debug;
 extern int  active_console;
 
@@ -115,6 +116,7 @@ static const struct option options[] = {
 	OPT_STRING('\0', "virtio-9p", &virtio_9p_dir, "root dir",
 			"Enable 9p over virtio"),
 	OPT_BOOLEAN('\0', "vnc", &vnc, "Enable VNC framebuffer"),
+	OPT_BOOLEAN('\0', "mbr", &mbr, "Enable booting from the disk instead of a kernel (you don't want this)"),
 
 	OPT_GROUP("Kernel options:"),
 	OPT_STRING('k', "kernel", &kernel_filename, "kernel",
@@ -557,6 +559,10 @@ int kvm_cmd_run(int argc, const char **argv, const char *prefix)
 	if (!kvm__load_kernel(kvm, kernel_filename, initrd_filename,
 				real_cmdline, vidmode))
 		die("unable to load kernel %s", kernel_filename);
+
+	// This is to test out loading in the MBR instead of the kernel
+	if (mbr)
+		kvm__load_mbr(kvm, image_filename[0]);
 
 	kvm->vmlinux		= vmlinux_filename;
 
