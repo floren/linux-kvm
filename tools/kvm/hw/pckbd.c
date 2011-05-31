@@ -256,6 +256,8 @@ static void kbd_reset(void)
 	state.msample 	= AUX_DEFAULT_SAMPLE;
 }
 
+//We can map the letters and numbers without a fuss,
+//but the other characters not so much.
 static char letters[26] = {
 	0x1c, 0x32, 0x21, 0x23, 0x24, /* a-e */
 	0x2b, 0x34, 0x33, 0x43, 0x3b, /* f-j */
