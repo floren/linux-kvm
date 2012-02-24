@@ -469,10 +469,6 @@ static const struct option options[] = {
 			"Kernel command line arguments"),
 	OPT_STRING('f', "firmware", &firmware_filename, "firmware",
 			"Firmware image to boot in virtual machine"),
-
-	OPT_GROUP("Firmware options (will be loaded instead of the kernel):"),
-	OPT_STRING('\0', "firmware", &firmware_filename, "firmware",
-			"Firmware image to use."),
 	OPT_STRING('\0', "load", &load_addr_str, "addr",
 			"Where in guest memory to load image, default 0x10000"),
 	OPT_STRING('\0', "entry", &entry_addr_str, "addr",
