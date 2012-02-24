@@ -121,7 +121,7 @@ void kvm__init_ram(struct kvm *kvm)
 void kvm__arch_set_cmdline(char *cmdline, bool video)
 {
 	strcpy(cmdline, "noapic noacpi pci=conf1 reboot=k panic=1 i8042.direct=1 "
-				"i8042.dumbkbd=1 i8042.nopnp=1");
+				"i8042.nopnp=1");
 	if (video)
 		strcat(cmdline, " video=vesafb console=tty0");
 	else
@@ -212,7 +212,7 @@ void kvm__irq_trigger(struct kvm *kvm, int irq)
 #define BOOT_PROTOCOL_REQUIRED	0x206
 #define LOAD_HIGH		0x01
 
-int load_flat_binary(struct kvm *kvm, int fd_kernel, int fd_initrd, const char *kernel_cmdline)
+int load_flat_binary(struct kvm *kvm, int fd_kernel, int fd_initrd, u32 load_addr, u32 entry_addr, const char *kernel_cmdline)
 {
 	void *p;
 	int nr;
@@ -227,13 +227,13 @@ int load_flat_binary(struct kvm *kvm, int fd_kernel, int fd_initrd, const char *
 	if (lseek(fd_kernel, 0, SEEK_SET) < 0)
 		die_perror("lseek");
 
-	p = guest_real_to_host(kvm, BOOT_LOADER_SELECTOR, BOOT_LOADER_IP);
+	p = guest_real_to_host(kvm, (load_addr >> 4) & 0xf000, load_addr & 0xffff);
 
 	while ((nr = read(fd_kernel, p, 65536)) > 0)
 		p += nr;
 
-	kvm->boot_selector	= BOOT_LOADER_SELECTOR;
-	kvm->boot_ip		= BOOT_LOADER_IP;
+	kvm->boot_selector	= (entry_addr >> 4) & 0xf000;
+	kvm->boot_ip		= entry_addr & 0xffff;
 	kvm->boot_sp		= BOOT_LOADER_SP;
 
 	return true;

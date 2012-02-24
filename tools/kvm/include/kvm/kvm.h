@@ -40,7 +40,7 @@ int kvm__max_cpus(struct kvm *kvm);
 void kvm__init_ram(struct kvm *kvm);
 int kvm__exit(struct kvm *kvm);
 bool kvm__load_kernel(struct kvm *kvm, const char *kernel_filename,
-			const char *initrd_filename, const char *kernel_cmdline, u16 vidmode);
+			const char *initrd_filename, const char *kernel_cmdline, u32 load_addr, u32 entry_addr, u16 vidmode);
 void kvm__start_timer(struct kvm *kvm);
 void kvm__stop_timer(struct kvm *kvm);
 void kvm__irq_line(struct kvm *kvm, int irq, int level);
@@ -67,7 +67,7 @@ int kvm__arch_free_firmware(struct kvm *kvm);
 bool kvm__arch_cpu_supports_vm(void);
 void kvm__arch_periodic_poll(struct kvm *kvm);
 
-int load_flat_binary(struct kvm *kvm, int fd_kernel, int fd_initrd, const char *kernel_cmdline);
+int load_flat_binary(struct kvm *kvm, int fd_kernel, int fd_initrd, u32 load_addr, u32 entry_addr, const char *kernel_cmdline);
 bool load_bzimage(struct kvm *kvm, int fd_kernel, int fd_initrd, const char *kernel_cmdline, u16 vidmode);
 
 /*

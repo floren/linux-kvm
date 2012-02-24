@@ -423,7 +423,7 @@ static bool initrd_check(int fd)
 }
 
 bool kvm__load_kernel(struct kvm *kvm, const char *kernel_filename,
-		const char *initrd_filename, const char *kernel_cmdline, u16 vidmode)
+		const char *initrd_filename, const char *kernel_cmdline, u32 load_addr, u32 entry_addr, u16 vidmode)
 {
 	bool ret;
 	int fd_kernel = -1, fd_initrd = -1;
@@ -448,7 +448,7 @@ bool kvm__load_kernel(struct kvm *kvm, const char *kernel_filename,
 
 	pr_warning("%s is not a bzImage. Trying to load it as a flat binary...", kernel_filename);
 
-	ret = load_flat_binary(kvm, fd_kernel, fd_initrd, kernel_cmdline);
+	ret = load_flat_binary(kvm, fd_kernel, fd_initrd, load_addr, entry_addr, kernel_cmdline);
 
 	if (ret)
 		goto found_kernel;

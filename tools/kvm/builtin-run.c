@@ -33,6 +33,7 @@
 #include "kvm/pci-shmem.h"
 #include "kvm/kvm-ipc.h"
 #include "kvm/builtin-debug.h"
+#include "kvm/sockterm.h"
 
 #include <linux/types.h>
 #include <linux/err.h>
@@ -74,9 +75,14 @@ static u8 num_net_devices;
 static bool virtio_rng;
 static const char *kernel_cmdline;
 static const char *kernel_filename;
+static u32 load_addr;
+static const char *load_addr_str;
+static u32 entry_addr;
+static const char *entry_addr_str;
 static const char *vmlinux_filename;
 static const char *initrd_filename;
 static const char *image_filename[MAX_DISK_IMAGES];
+static const char *firmware_filename;
 static const char *console;
 static const char *dev;
 static const char *network;
@@ -99,6 +105,7 @@ static bool using_rootfs;
 static bool custom_rootfs;
 static bool no_net;
 static bool no_dhcp;
+static int sockport;
 extern bool ioport_debug;
 static int  kvm_run_wrapper;
 extern int  active_console;
@@ -450,6 +457,7 @@ static const struct option options[] = {
 	OPT_STRING('\0', "sandbox", &sandbox, "script",
 			"Run this script when booting into custom rootfs"),
 	OPT_STRING('\0', "hugetlbfs", &hugetlbfs_path, "path", "Hugetlbfs path"),
+	OPT_INTEGER('\0', "sockterm", &sockport, "Use socket tty with specified port."),
 
 	OPT_GROUP("Kernel options:"),
 	OPT_STRING('k', "kernel", &kernel_filename, "kernel",
@@ -458,6 +466,14 @@ static const struct option options[] = {
 			"Initial RAM disk image"),
 	OPT_STRING('p', "params", &kernel_cmdline, "params",
 			"Kernel command line arguments"),
+
+	OPT_GROUP("Firmware options (will be loaded instead of the kernel):"),
+	OPT_STRING('\0', "firmware", &firmware_filename, "firmware",
+			"Firmware image to use."),
+	OPT_STRING('\0', "load", &load_addr_str, "addr",
+			"Where in guest memory to load image, default 0x10000"),
+	OPT_STRING('\0', "entry", &entry_addr_str, "addr",
+			"Entry point of the loaded image, default 0x10000."),
 
 	OPT_GROUP("Networking options:"),
 	OPT_CALLBACK_DEFAULT('n', "network", NULL, "network params",
@@ -985,6 +1001,16 @@ static int kvm_cmd_run_init(int argc, const char **argv)
 	if (!script)
 		script = DEFAULT_SCRIPT;
 
+	if (!load_addr_str)
+		load_addr_str = "0x10000";
+
+	load_addr = strtoul(load_addr_str, 0, 0);
+
+	if (!entry_addr_str)
+		entry_addr_str = "0x10000";
+
+	entry_addr = strtoul(entry_addr_str, 0, 0);
+
 	term_init();
 
 	if (!guest_name) {
@@ -1057,6 +1083,10 @@ static int kvm_cmd_run_init(int argc, const char **argv)
 		vidmode = 0;
 	}
 
+	/* set up sockterm */
+	if (sockport != 0)
+		sockterm(sockport);
+
 	memset(real_cmdline, 0, sizeof(real_cmdline));
 	kvm__arch_set_cmdline(real_cmdline, vnc || sdl);
 
@@ -1110,9 +1140,15 @@ static int kvm_cmd_run_init(int argc, const char **argv)
 	printf("  # %s run -k %s -m %Lu -c %d --name %s\n", KVM_BINARY_NAME,
 		kernel_filename, ram_size / 1024 / 1024, nrcpus, guest_name);
 
-	if (!kvm__load_kernel(kvm, kernel_filename, initrd_filename,
-				real_cmdline, vidmode))
-		die("unable to load kernel %s", kernel_filename);
+	if (firmware_filename) {
+		if (!kvm__load_kernel(kvm, firmware_filename, initrd_filename,
+					real_cmdline, load_addr, entry_addr, vidmode))
+			die("unable to load BIOS %s", firmware_filename);
+	} else {
+		if (!kvm__load_kernel(kvm, kernel_filename, initrd_filename,
+					real_cmdline, load_addr, entry_addr, vidmode))
+			die("unable to load kernel %s", kernel_filename);
+	}
 
 	kvm->vmlinux = vmlinux_filename;
 	r = symbol_init(kvm);
@@ -1218,10 +1254,12 @@ static int kvm_cmd_run_init(int argc, const char **argv)
 
 	kvm__start_timer(kvm);
 
-	kvm__arch_setup_firmware(kvm);
-	if (r < 0) {
-		pr_err("kvm__arch_setup_firmware() failed with error %d\n", r);
-		goto fail;
+	if (!firmware_filename) {
+		kvm__arch_setup_firmware(kvm);
+		if (r < 0) {
+			pr_err("kvm__arch_setup_firmware() failed with error %d\n", r);
+			goto fail;
+		}
 	}
 
 	for (i = 0; i < nrcpus; i++) {
