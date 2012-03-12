@@ -11,7 +11,7 @@
 #define BIOS_IP		0xfff0
 #define BIOS_SP		0x8000
 
-bool kvm__load_firmware(struct kvm *kvm, const char *firmware_filename)
+bool kvm__load_firmware(struct kvm *kvm, const char *firmware_filename, u32 load_addr, u32 entry_addr)
 {
 	struct stat st;
 	void *p;

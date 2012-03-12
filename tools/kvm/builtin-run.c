@@ -83,7 +83,6 @@ static const char *vmlinux_filename;
 static const char *initrd_filename;
 static const char *firmware_filename;
 static const char *image_filename[MAX_DISK_IMAGES];
-static const char *firmware_filename;
 static const char *console;
 static const char *dev;
 static const char *network;
@@ -1001,12 +1000,12 @@ static int kvm_cmd_run_init(int argc, const char **argv)
 		script = DEFAULT_SCRIPT;
 
 	if (!load_addr_str)
-		load_addr_str = "0x10000";
+		load_addr_str = "0xf0000";
 
 	load_addr = strtoul(load_addr_str, 0, 0);
 
 	if (!entry_addr_str)
-		entry_addr_str = "0x10000";
+		entry_addr_str = "0xffff0";
 
 	entry_addr = strtoul(entry_addr_str, 0, 0);
 
@@ -1250,7 +1249,7 @@ static int kvm_cmd_run_init(int argc, const char **argv)
 	kvm__start_timer(kvm);
 
 	if (firmware_filename) {
-		if (!kvm__load_firmware(kvm, firmware_filename))
+		if (!kvm__load_firmware(kvm, firmware_filename, load_addr, entry_addr))
 			die("unable to load firmware image %s: %s", firmware_filename, strerror(errno));
 	} else {
 		kvm__arch_setup_firmware(kvm);
