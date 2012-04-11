@@ -469,9 +469,9 @@ static const struct option options[] = {
 	OPT_STRING('f', "firmware", &firmware_filename, "firmware",
 			"Firmware image to boot in virtual machine"),
 	OPT_STRING('\0', "load", &load_addr_str, "addr",
-			"Where in guest memory to load image, default 0x10000"),
+			"Where in guest memory to load image, default 0xf0000"),
 	OPT_STRING('\0', "entry", &entry_addr_str, "addr",
-			"Entry point of the loaded image, default 0x10000."),
+			"Entry point of the loaded image, default 0xffff0."),
 
 	OPT_GROUP("Networking options:"),
 	OPT_CALLBACK_DEFAULT('n', "network", NULL, "network params",
